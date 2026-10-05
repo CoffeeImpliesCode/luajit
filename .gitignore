@@ -1,0 +1,40 @@
+*.[oa]
+*.so
+*.obj
+*.lib
+*.exp
+*.pdb
+*.dll
+*.exe
+*.manifest
+*.dmp
+*.swp
+.tags
+
+# --- appended by this fork -------------------------------------------------
+#
+# Everything above is upstream's own `.gitignore`, byte for byte: upstream's
+# `src/.gitignore` is a second, separate file and is not merged into this one.
+# Nothing above is removed to make room.
+#
+# The Zig package build writes its caches and its installation tree beside the
+# sources. `src/.gitignore` already covers upstream's generated inputs
+# (`luajit.h`, `lj_bcdef.h`, `lj_vm.S` and the rest), and this build writes those
+# into the build cache rather than into `src/`, so the entries above are
+# unchanged in meaning.
+#
+# No upstream entry is broad enough to swallow a file this fork adds, so nothing
+# has to be re-included: the fork's own paths are `build.zig`, `build.zig.zon`,
+# `build_support/`, `zig/`, `consumer/`, `tests.zig`, `smoke.zig` and `*.md`, and
+# `*.lib` above matches `libunibreak`-style directories but not any of them.
+.zig-cache/
+zig-out/
+zig-pkg/
+
+# `consumer/` is a package in its own right, and running its own `zig build`
+# inside this repository -- which is what CI's consumer step does -- would leave
+# both directories inside it. They are listed here rather than excluded in
+# `build.zig.zon`, because the manifest lists the consumer's three files by name
+# for the same reason.
+consumer/.zig-cache/
+consumer/zig-out/

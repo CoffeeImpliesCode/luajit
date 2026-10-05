@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: MIT
+.{
+    // The name a dependent writes as `luajit` in `b.dependency`.
+    .name = .luajit,
+    // Upstream's own version numbers, `Makefile:16-17`: `MAJVER= 2`,
+    // `MINVER= 1`. `Makefile:26` appends `$(RELVER)`, the pinned commit's POSIX
+    // timestamp, and the build does that too: the generated `luajit.h` reports
+    // `LuaJIT 2.1.<relver>` with `relver` read from the checked-in `.relver`
+    // rather than from git. `.relver` is a tracked upstream file (`.gitattributes`
+    // marks it `export-subst`), so it is named below and travels with the
+    // package: without it a fetched copy would have no version to generate and
+    // the build would have to fall back to `ROLLING`, which
+    // `luajit_rolling.h:79` forbids.
+    .version = "2.1.1788856981",
+    .fingerprint = 0xda4bba66d6f9ca25,
+    .minimum_zig_version = "0.16.0",
+    // The native core is compiled from this repository. `minilua` and
+    // `buildvm` are built here from `src/host/`, DynASM runs from `dynasm/`, and
+    // nothing is fetched at build time: no git, no Lua 5.1.5 source tree, no
+    // tarball, no submodule. There is no dependency to declare.
+    .dependencies = .{},
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        // The cross-test harness profile. `cross-test` discovers this file by
+        // name from the package root and `source`s it, so it has to travel: a
+        // fetched copy without it would silently fall back to the harness
+        // defaults.
+        "cross-test.profile.sh",
+        // The native graph, the architecture rules, the transcribed source lists,
+        // the translation aggregate and the two gate programs. Imported by
+        // build.zig, so it is part of the package.
+        "build_support",
+        // Upstream's own build system. `src/Makefile` and the top-level
+        // `Makefile` are the specification this build reproduces: every rule,
+        // source list and file name in it was read from them. Neither is
+        // executed, and neither travels as a runnable build.
+        "Makefile",
+        "src/Makefile",
+        "src/Makefile.dep",
+        // Upstream's C core, its generators and its generated-input ignore
+        // rules. This is the whole of upstream's source; the directory travels
+        // rather than a hand-picked file list so a dependent receives upstream's
+        // tree and not a subset of it.
+        "src",
+        // Upstream's assembler generator and its six architecture backends.
+        // DynASM is run from here by the `minilua` host tool.
+        "dynasm",
+        // The man page, the pkg-config template and the rolling-version stamp.
+        // `.relver` is the non-git input to `genversion.lua`; `.gitattributes`
+        // marks it `export-subst`, which is upstream's own statement about how
+        // the value is meant to travel.
+        "etc",
+        ".relver",
+        ".gitattributes",
+        // Upstream's own documentation. Nothing in this package executes or
+        // rewrites any of it, and it travels because deleting upstream material
+        // this fork did not replace would make the tree a partial import.
+        "doc",
+        // Upstream's README is in this package at two paths with identical
+        // bytes: `README` under its own upstream name, and `README.upstream.md`
+        // under the fork-specific name. `UPSTREAM.sha256` records both with the
+        // same digest and says why, so a fetched copy that shipped only the
+        // renamed one would carry a digest record with no file behind it.
+        // Both travel.
+        "README",
+        "README.upstream.md",
+        // The `COPYRIGHT` file this repository carries as its upstream licence
+        // text, unmodified. The fork's own README.md, and the provenance,
+        // changelog and licence records this fork adds, are named below.
+        "COPYRIGHT",
+        // The runtime-loading route's build half. `runtime/graph.zig` is what a
+        // build calls instead of `translate.createModule()` when the native
+        // symbols are resolved through the platform loader at run time rather
+        // than linked; `runtime/library.zig` is this SDK's descriptor in that
+        // route; `runtime/loader.zig` is the reusable core, supplied by the
+        // driver and shared by every SDK in this workspace.
+        //
+        // The default `zig build` uses only `runtime/loader.zig`, and only for
+        // the two public types `zig/root.zig` re-exports: it is the **linked**
+        // configuration, in which the `c` import is the translated header and
+        // `rt` is that core. `graph.zig` and `library.zig` are not on that
+        // path -- they belong to the runtime configuration -- and they travel so
+        // that configuration is reachable from this package without a second
+        // checkout.
+        "runtime",
+        // This fork's Zig-facing source, its test root, its smoke example and its
+        // separate consumer package. `zig/root.zig` is the published facade and
+        // is the module `dep.module("luajit")` resolves to; the consumer's three
+        // files are named one by one rather than as a directory, because
+        // building the consumer inside this repository would otherwise leave a
+        // `.zig-cache` and a `zig-out` inside it and make the package hash change
+        // as a side effect of building it.
+        "zig",
+        "tests.zig",
+        "smoke.zig",
+        "consumer/build.zig",
+        "consumer/build.zig.zon",
+        "consumer/src/main.zig",
+        // This fork's build rules and ignore rules.
+        ".gitignore",
+        ".github",
+        // This fork's provenance, licence and changelog records, and its
+        // standalone Nix and development-environment definitions. The
+        // provenance role owns them; they are listed here because a fetched copy
+        // that omitted them would ship the licence text without the record of
+        // what it covers.
+        "README.md",
+        "README.zig.md",
+        "UPSTREAM.md",
+        "UPSTREAM.sha256",
+        "FORK-NOTES.md",
+        "FORK-LICENSE.md",
+        "NOTICE.md",
+        "CHANGELOG.md",
+        "package.nix",
+        "flake.nix",
+        // The resolved input lock. `flake.nix`'s `nixpkgs.url` names a
+        // revision, and this file is what records that the revision in that URL
+        // is the revision the inputs were actually resolved at; without it a
+        // fetched copy would resolve a fresh lock instead of reading one, and
+        // `nix build` would run against whatever a channel held that day.
+        // `devenv.lock` is not named: it does not exist in this tree, and no
+        // absent file is invented here.
+        "flake.lock",
+        "devenv.nix",
+        "devenv.yaml",
+        ".envrc",
+        // `.zig-cache/`, `zig-out/` and `zig-pkg/` are absent by construction:
+        // no entry above names a directory that a build writes into except
+        // `src/`, whose generated outputs (`src/.gitignore` lists
+        // `luajit.h`, `lj_bcdef.h`, `lj_vm.S` and the rest) this build writes
+        // into the build cache instead, never into the source tree. `.git/` is
+        // never named either. See `.gitignore`.
+    },
+}

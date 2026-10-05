@@ -1,0 +1,20 @@
+.{
+    .name = .luajit_consumer,
+    // This package is not published and carries no upstream version; the
+    // version identifies the proof, not a release.
+    .version = "0.1.0",
+    .fingerprint = 0xc37d5eccf5b7baf0,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // A relative path, not a registry or archive URL. The consumer is the
+        // proof that `dep.module("luajit")` works from outside the package that
+        // defines it; resolving that through the network would make the proof
+        // depend on a published state of the world instead.
+        .luajit = .{ .path = ".." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
