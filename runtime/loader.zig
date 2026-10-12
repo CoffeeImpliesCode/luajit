@@ -220,22 +220,22 @@ pub const Phase = enum(u8) {
 /// protocol: the table writes happen before the release store, so a reader that
 /// sees `ready` also sees every field the table holds.
 pub const Ready = struct {
-    phase: std.atomic.Value(u8) = .init(@intFromEnum(Phase.not_loaded)),
+    phase: std.atomic.Value(u8) = .init(@backingInt(Phase.not_loaded)),
 
     /// True once a load has succeeded. One acquire load, which is what a routed
     /// call pays before it is allowed to touch the table.
     pub fn isReady(self: *const Ready) bool {
-        return self.phase.load(.acquire) == @intFromEnum(Phase.ready);
+        return self.phase.load(.acquire) == @backingInt(Phase.ready);
     }
 
     /// The current state, for the loader's own decisions under its lock.
     pub fn state(self: *const Ready) Phase {
-        return @enumFromInt(self.phase.load(.acquire));
+        return @fromBackingInt(self.phase.load(.acquire));
     }
 
     /// Publish or withdraw the table, with release ordering.
     pub fn set(self: *Ready, value: Phase) void {
-        self.phase.store(@intFromEnum(value), .release);
+        self.phase.store(@backingInt(value), .release);
     }
 };
 

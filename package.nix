@@ -25,8 +25,8 @@
 {
   lib,
   stdenv,
-  # `zig` is injected, not defaulted: both entry points name pkgs.zig_0_16 out
-  # loud, so a nixpkgs bump cannot move this SDK off 0.16.0 by way of the
+  # `zig` is injected, not defaulted: both entry points name pkgs.zig_0_17 out
+  # loud, so a nixpkgs bump cannot move this SDK off 0.17.0 by way of the
   # moving `pkgs.zig` alias.
   zig,
   # Read by `installCheckPhase` to resolve the metadata `build.zig` writes. It
@@ -34,11 +34,11 @@
   # not be bound.
   pkg-config,
   linkage ? "static",
-  optimize ? "ReleaseFast",
+  optimize ? "fast",
 }:
 
-assert lib.assertMsg (zig.version == "0.16.0")
-  "LuaJIT builds with Zig 0.16.0; this derivation was given zig ${zig.version}";
+assert lib.assertMsg (zig.version == "0.17.0")
+  "LuaJIT builds with Zig 0.17.0; this derivation was given zig ${zig.version}";
 assert lib.assertMsg (linkage == "static" || linkage == "dynamic")
   "linkage must be \"static\" or \"dynamic\", not ${lib.strings.toString linkage}";
 # A Nix cross derivation would have to tell the build graph which target to
@@ -191,11 +191,11 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = {
     description =
-      "Just-In-Time compiler for Lua 5.1, production rolling release 2.1.1788856981, built from this repository's own source by Zig 0.16";
+      "Just-In-Time compiler for Lua 5.1, production rolling release 2.1.1788856981, built from this repository's own source by Zig 0.17";
     longDescription = ''
       LuaJIT 2.1.1788856981, pinned at commit
       c6ffc141a8762b41703f9287d63d93622a13dd8f and compiled from this
-      repository's own src/ by Zig 0.16.0. The release version is not typed
+      repository's own src/ by Zig 0.17.0. The release version is not typed
       anywhere in this package: it is the commit timestamp in the committed
       .relver, substituted into src/luajit.h exactly as upstream does.
 

@@ -12,6 +12,12 @@ Every statement in § 1 through § 5 is `SOURCE-CONFIRMED`, read out of a file i
 this repository. § 6 is the one place a run appears, and the run it reports
 failed.
 
+This bookmark targets stock Zig 0.17.0. The public interface is unchanged;
+current 0.17 proof passed all 29 SDK tests, smoke and the separate consumer on
+Linux x86_64 in Debug and ReleaseSafe, both linked-static and explicitly
+runtime-loaded. See CHANGELOG entry 28. Gate records below are historical 0.16
+results, not a replay of the cross-platform matrix.
+
 ---
 
 ## 1. The module

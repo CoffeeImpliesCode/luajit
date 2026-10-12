@@ -13,7 +13,7 @@
     // `luajit_rolling.h:79` forbids.
     .version = "2.1.1788856981",
     .fingerprint = 0xda4bba66d6f9ca25,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     // The native core is compiled from this repository. `minilua` and
     // `buildvm` are built here from `src/host/`, DynASM runs from `dynasm/`, and
     // nothing is fetched at build time: no git, no Lua 5.1.5 source tree, no
@@ -23,6 +23,9 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "port017.zig",
+        "port017_make.zig",
+        "port017_runtimes.zig",
         // The cross-test harness profile. `cross-test` discovers this file by
         // name from the package root and `source`s it, so it has to travel: a
         // fetched copy without it would silently fall back to the harness
@@ -98,9 +101,9 @@
         "consumer/build.zig",
         "consumer/build.zig.zon",
         "consumer/src/main.zig",
+        "consumer/native",
         // This fork's build rules and ignore rules.
         ".gitignore",
-        ".github",
         // This fork's provenance, licence and changelog records, and its
         // standalone Nix and development-environment definitions. The
         // provenance role owns them; they are listed here because a fetched copy

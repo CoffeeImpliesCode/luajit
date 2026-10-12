@@ -84,8 +84,9 @@ Every file this fork wrote. The complete list as of this writing:
 
 | Path | What it is |
 |---|---|
-| `build.zig` | the Zig 0.16 build graph: native closure, generators, install |
+| `build.zig` | the Zig 0.17 build graph: native closure, generators, install |
 | `build.zig.zon` | the package manifest, `.paths` and the rolling `.version` |
+| `port017.zig`, `port017_make.zig`, `port017_runtimes.zig` | configure/make compatibility helpers |
 | `build_support/` | fork-only build helpers: `sources.zig`, `abi.zig`, `graph.zig`, `translate.h`, `native_selfcheck.lua` |
 | `.gitignore` | **only the block this fork appends**; see the note below |
 | `zig/root.zig` | the typed Zig facade and the raw C route |
@@ -102,7 +103,6 @@ Every file this fork wrote. The complete list as of this writing:
 | `consumer/build.zig.zon` | that package's manifest |
 | `consumer/src/main.zig` | that package's program |
 | `cross-test.profile.sh` | harness settings for the 53-platform matrix |
-| `.github/workflows/verify.yml` | this fork's own verification workflow |
 | `package.nix` | the one source-only Nix derivation |
 | `flake.nix` | the `static`, `shared` and `default` variants |
 | `flake.lock` | the resolved input lock `flake.nix` pins its `nixpkgs.url` to |

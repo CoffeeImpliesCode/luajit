@@ -117,22 +117,9 @@ const relver_file = ".relver";
 /// plain string at that point, not as a step's output, so it cannot be
 /// produced by a step and threaded through.
 pub fn releaseVersion(b: *std.Build) []const u8 {
-    // Read through `b.build_root`, which is "the directory containing build.zig"
-    // (`std/Build.zig:56-57`) -- this package's root whether this build is the
-    // top-level one or a dependency child of the consumer package -- and so the
-    // same handle `addPkgConfig` reads `etc/luajit.pc` through.
-    //
-    // Owned by `b.allocator`, which outlives the graph this value is read for,
-    // so the trimmed slice below is returned without a second copy.
-    const raw = b.build_root.handle.readFileAlloc(
-        b.graph.io,
-        relver_file,
-        b.allocator,
-        .limited(1 << 10),
-    ) catch |err| std.debug.panic(
-        "luajit: cannot read {s}: {s}",
-        .{ relver_file, @errorName(err) },
-    );
+    // Embedded configure inputs participate in the configuration cache.
+    b.dependOnFileContents(b.path(relver_file));
+    const raw = @embedFile("../.relver");
     const digits = std.mem.trim(u8, raw, " \t\r\n");
     if (digits.len == 0)
         std.debug.panic("luajit: {s} is empty", .{relver_file});
@@ -278,7 +265,7 @@ pub fn addGraph(b: *std.Build, o: Options) !Graph {
     const buildvm = addBuildvm(b, target, o, version_header, buildvm_arch);
 
     // --- step 4: the `buildvm` outputs -------------------------------------
-    const defs = addBuildvmOutputs(b, buildvm, version_header);
+    const defs = addBuildvmOutputs(b, buildvm, version_header, o.lua_root);
     const vm = addVmOutput(b, buildvm, target);
 
     // --- step 5: the library, the CLI and the facade -----------------------
@@ -725,11 +712,9 @@ fn addBuildvm(
 /// Other hosts and non-emulated builds retain the native artifact run.
 fn addRunGenerator(b: *std.Build, buildvm: *std.Build.Step.Compile) *std.Build.Step.Run {
     const generator = buildvm.rootModuleTarget();
-    if (b.enable_qemu and generator.os.tag == .linux and generator.ptrBitWidth() != b.graph.host.result.ptrBitWidth()) {
+    if (generator.os.tag == .linux and generator.ptrBitWidth() != b.graph.host.result.ptrBitWidth()) {
         if (generatorEmulator(generator.cpu.arch)) |qemu| {
-            const run = b.addSystemCommand(&.{qemu});
-            run.addArtifactArg(buildvm);
-            return run;
+            return @import("../port017.zig").generator(b, buildvm, qemu);
         }
     }
     return b.addRunArtifact(buildvm);
@@ -787,9 +772,20 @@ fn addBuildvmOutputs(
     b: *std.Build,
     buildvm: *std.Build.Step.Compile,
     version_header: std.Build.LazyPath,
+    lua_root: ?[]const u8,
 ) BuildvmOutputs {
     const dir = b.addWriteFiles();
     _ = dir.addCopyFile(version_header, "luajit.h");
+    const root_header = if (lua_root == null)
+        @import("../port017.zig").rootHeader(b)
+    else
+        b.addWriteFiles().add("lua_install_root.h", "");
+    _ = dir.addCopyFile(root_header, "lua_install_root.h");
+    _ = dir.add("lua_translate_root.h",
+        \\#include "lua_install_root.h"
+        \\#include "translate.h"
+        \\
+    );
 
     // One run step per mode, so no two modes' outputs collide and each is
     // separately cached. `fold` records `src/Makefile:709-711`'s different
@@ -828,6 +824,16 @@ fn addBuildvmOutputs(
         }
     }
     return .{ .generated_dir = dir.getDirectory(), .vmdef = vmdef };
+}
+
+fn rootSource(b: *std.Build, source: []const u8) std.Build.LazyPath {
+    // Ordinary includes let Zig track the generated header through its include
+    // path. A string-valued -include flag is resolved against the caller's cwd
+    // by the C cache scanner instead of through that path.
+    return b.addWriteFiles().add(b.fmt("root-{s}", .{source}), b.fmt(
+        "#include \"lua_install_root.h\"\n#include \"{s}\"\n",
+        .{source},
+    ));
 }
 
 /// Compile the library for the target.
@@ -908,10 +914,10 @@ fn addLibrary(
     // argument lmdb, spglib and inchi already record, and it leaves Zig's own
     // sanitizer and every other optimization mode untouched.
     mod.sanitize_c = .off;
-    for (sources.ljcore_sources) |s| mod.addCSourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", s })) });
-    mod.addCSourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", sources.lib_init_source })) });
+    for (sources.ljcore_sources) |s| mod.addCSourceFile(.{ .file = rootSource(b, s) });
+    mod.addCSourceFile(.{ .file = rootSource(b, sources.lib_init_source) });
     // `src/Makefile:512-514` (`$(LJLIB_O)`).
-    for (sources.ljl_sources) |s| mod.addCSourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", s })) });
+    for (sources.ljl_sources) |s| mod.addCSourceFile(.{ .file = rootSource(b, s) });
     // `src/Makefile:532` (`$(LJVMCORE_O)`) begins with the VM, which is not a C
     // source: `src/Makefile:507-510` assembles `lj_vm.S` for ELF and Mach-O, or
     // `:561` links the PE object `buildvm` wrote.
@@ -989,7 +995,7 @@ fn addCli(
     // `src/Makefile:538`, `$(LUAJIT_O)`, built by `:727-729` with
     // `$(TARGET_STCC)` alone -- never the dynamic-flavoured compile -- so this
     // unit is separate from the library's.
-    mod.addCSourceFile(.{ .file = b.path(b.pathJoin(&.{ "src", sources.front_end })) });
+    mod.addCSourceFile(.{ .file = rootSource(b, sources.front_end) });
     // The installed CLI is `bin/luajit` and the installed library is
     // `lib/libluajit-5.1.so`, so the installed copy needs the install tree's own
     // search path to find it, while the copy `native-test` executes runs out of
@@ -1114,7 +1120,7 @@ fn addTranslate(
 ) *std.Build.Step.TranslateC {
     const generated_dirs = [_]std.Build.LazyPath{ version_header.dirname(), defs.generated_dir };
     const aggregate = switch (routeFor(o.target)) {
-        .aro => b.path("build_support/translate.h"),
+        .aro => defs.generated_dir.path(b, "lua_translate_root.h"),
         .preprocessed => preprocessedAggregate(b, o, target, &generated_dirs),
     };
 
@@ -1126,6 +1132,7 @@ fn addTranslate(
     });
     translate.addIncludePath(b.path("src"));
     translate.addIncludePath(b.path("src/host"));
+    translate.addIncludePath(b.path("build_support"));
     // The generated headers are read by bare name, so their directories are on
     // the translation line as well as the compile line. `luajit.h` in
     // particular is the generated one: `luajit_rolling.h:79` ends in `#error`, so
@@ -1230,6 +1237,8 @@ fn preprocessedAggregate(
     // `src/`, for the headers themselves, then each generated directory.
     run.addPrefixedDirectoryArg("-I", b.path("src"));
     for (generated_dirs) |d| run.addPrefixedDirectoryArg("-I", d);
+    run.addArg("-include");
+    run.addFileArg(generated_dirs[1].path(b, "lua_install_root.h"));
     for (abi.targetArchMacros(target, b.allocator)) |entry| {
         if (std.mem.indexOfScalar(u8, entry, '=')) |i| {
             run.addArg(b.fmt("-D{s}={s}", .{ entry[0..i], entry[i + 1 ..] }));

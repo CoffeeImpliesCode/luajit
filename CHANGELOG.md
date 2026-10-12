@@ -1124,6 +1124,55 @@ replay against this source. Until both have printed, entry 26's `pass 0`,
 they are explicitly the `20261004T221720228710Z-45046` **pre-host-fix** cohort.
 A landed correction is not a result.
 
+## 28 — Stock Zig 0.17 configure/make migration
+
+**2026-10-12.**
+
+Replaced configure-time access to removed build-root, install-prefix, cache and
+executor fields. Checked-in version and pkg-config inputs are embedded and
+tracked. A host build helper resolves consumer executability, narrowed-generator
+QEMU selection, cache paths and prefix forwarding at make time. A generated
+header preserves the install-root default: an absolute non-cache prefix supplies
+`LUA_ROOT`, `LUA_MULTILIB` and `LUA_LJDIR`; a dependency keeps upstream's default.
+The same header reaches the native core, CLI and translated public headers.
+
+Enum backing conversions use the 0.17 builtins. Manifests and Nix entry points
+select stock 0.17.0. Removed the manifest's nonexistent `.github` path left after
+inherited CI removal. No upstream bytes or public facade signatures changed.
+The separate consumer uses an in-root `native` symlink to its parent SDK rather
+than an out-of-root manifest path; both package manifests include that link.
+Native C units include the generated root header through generated wrappers, so
+the C cache scanner tracks it normally instead of interpreting a string-valued
+`-include` relative to the caller's working directory.
+The optional libc runtime directory is resolved through stock Run's protocol
+transport before ordinary argument forwarding, so an unspecified directory is
+not eagerly resolved as a required path. The static installed-header consumer
+links the same external unwinder already emitted in generated `Libs.private`
+and linked by the native graph on ELF targets.
+Nested consumer builds inherit the resolved global cache through
+`ZIG_GLOBAL_CACHE_DIR`, because stock 0.17's `zig build` does not accept the old
+`--global-cache-dir` CLI flag.
+Fixed two installed-header fixture errors exposed by the new proof: parenthesize
+the literal receiver in the string method call, and return zero on writer success
+and nonzero on allocation failure as required by `lua_Writer`. The same string
+length and bytecode round-trip assertions remain; neither change affects the
+runtime implementation.
+The runtime dispatch generator uses the new `Ast.ParseOptions` contract.
+The consumer forwards the dashed `lua-root` dependency option by its exact name.
+
+Observed on Linux x86_64 glibc 2.39 with stock Zig 0.17.0:
+`zig build test smoke native-test -Doptimize=Debug|ReleaseSafe` passed all 29
+Zig tests and the native self-check in each mode. `consumer header-check` also
+passed in both modes, with zero installed-header assertion failures. Debug
+consumer execution passed with an explicitly supplied optional libc runtime
+directory. `sha256sum -c --quiet UPSTREAM.sha256` passed.
+After `zig build install -Dlinkage=dynamic`, exporting the exact installed
+`LUAJIT_TEST_PROVIDER` and running `zig build test smoke consumer -Druntime=true
+-Dlinkage=dynamic` also passed all 29 tests, smoke and consumer in both modes.
+The zlua module, integration tests and dependency consumer passed for both
+native linkages in Debug and ReleaseSafe. All earlier cross-target receipts
+remain historical; they were not replayed by this port.
+
 ## See also
 
 * [`FORK-NOTES.md`](FORK-NOTES.md) — why each of the above was decided, and

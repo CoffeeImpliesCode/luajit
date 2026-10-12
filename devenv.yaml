@@ -13,6 +13,8 @@
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/c2f38fe7f9e04d9aadd354d380f2bd40531d9737
+  nixpkgs-unstable:
+    url: github:NixOS/nixpkgs/6510408d147d8c5e6d76043e899e9251756f6a75
 
 # `clean` under this key is devenv's environment-sanitising option, and it
 # takes `enabled` and `keep`, not a sequence of paths. It is written in that
@@ -30,7 +32,7 @@ clean:
   keep: []
 
 # Nothing here is unfree and nothing here is unsupported: the shell holds the
-# Zig 0.16.0 toolchain, pkg-config and git, and it builds LuaJIT from the
+# Zig 0.17.0 toolchain, pkg-config and git, and it builds LuaJIT from the
 # source already in this directory.
 allowUnfree: false
 allowUnsupportedSystem: false

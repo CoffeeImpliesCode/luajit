@@ -12,7 +12,7 @@ publishes a typed Zig surface plus the complete raw C route.
 | Pin | `c6ffc141a8762b41703f9287d63d93622a13dd8f` |
 | Release version | `2.1.1788856981` — **generated**, see below |
 | Lua ABI | 5.1 (`LUA_VERSION_NUM 501`); GC64 on every 64-bit target |
-| Toolchain | Zig 0.16.0 |
+| Toolchain | Zig 0.17.0 |
 | Licence | MIT over upstream's files, public-domain donations inside the library, MIT over this fork's files — read [`NOTICE.md`](NOTICE.md) |
 
 This README is the fork's. Upstream's own is preserved byte-for-byte as
@@ -27,6 +27,19 @@ header declares `LUAJIT_VERSION "LuaJIT 2.1.1788856981"` and exports the
 identity symbol **`luaJIT_version_2_1_1788856981`**, which exists so that a
 dynamic linker rejects a mismatch instead of letting it run.
 [`UPSTREAM.md`](UPSTREAM.md) derives all four steps.
+
+This bookmark ports the build graph to stock Zig **0.17.0**. Install-prefix
+defaults and executor-dependent consumer/generator choices are resolved by a
+host tool at make time; configure no longer observes maker-owned state.
+Native sources, the Lua ABI and public facade contracts are unchanged.
+
+**Current 0.17 proof:** Linux x86_64 glibc 2.39 passed all 29 SDK tests, smoke
+and the separate consumer in Debug and ReleaseSafe, both linked-static and
+runtime-loaded from an explicitly named shared provider. Native CLI self-checks,
+installed-header assertions and upstream digests passed. zlua integration and
+its dependency consumer passed both native linkages in both modes.
+See CHANGELOG entry 28. All gate tables and cross-target receipts below are
+historical 0.16 results, not a current cross-platform or Nix derivation proof.
 
 ---
 

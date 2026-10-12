@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Zig 0.16 build for the LuaJIT package in this repository.
+//! Zig 0.17 build for the LuaJIT package in this repository.
 //!
 //! Upstream pin: LuaJIT v2.1 rolling snapshot
 //! `c6ffc141a8762b41703f9287d63d93622a13dd8f` (2026-09-08T08:43:01Z). The release
@@ -210,39 +210,6 @@ fn target_was_named(b: *const std.Build) bool {
     return b.user_input_options.contains("target");
 }
 
-/// The install root to compile into the library, or null when there is none.
-///
-/// `b.install_prefix` answers a different question from "did the caller name a
-/// prefix", and the difference matters here. A `b.dependency` child never
-/// receives one: `createChildOnly` overwrites the prefix with a digest
-/// directory inside the build cache (`std/Build.zig:721-723`), so the resolved
-/// value is `<cache>/i/<hash>` and it is absolute. Compiling that into
-/// `LUA_ROOT`, into the delivered CLI's package path and into `luajit.pc` would
-/// name a directory the cache manager may discard, and the dependency route is
-/// exactly what `consumer/` exists to prove.
-///
-/// `--prefix` cannot be asked about directly the way `target_was_named` asks
-/// about `-Dtarget`: the build runner parses it itself
-/// (`lib/compiler/build_runner.zig:165-166`) and hands it to
-/// `resolveInstallPrefix`, so unlike `-Dtarget` it never reaches
-/// `b.user_input_options`. What the two cases share is the location. A prefix
-/// inside the build cache is the digest directory `createChildOnly` writes; a
-/// prefix outside it is a real directory, whether it is the `--prefix` a caller
-/// named or the `<build_root>/zig-out` default (`std/Build.zig:732-733`).
-fn install_root(b: *const std.Build) ?[]const u8 {
-    const prefix = b.install_prefix;
-    if (!std.fs.path.isAbsolute(prefix)) return null;
-    var cache = b.cache_root.path orelse return prefix;
-    while (cache.len > 1 and std.fs.path.isSep(cache[cache.len - 1])) {
-        cache = cache[0 .. cache.len - 1];
-    }
-    if (prefix.len > cache.len and std.mem.startsWith(u8, prefix, cache) and
-        std.fs.path.isSep(prefix[cache.len]))
-    {
-        return null;
-    }
-    return prefix;
-}
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -303,7 +270,7 @@ pub fn build(b: *std.Build) void {
             );
         }
     }
-    const lua_root = lua_root_option orelse install_root(b);
+    const lua_root = lua_root_option;
 
     // Whether this target is one LuaJIT 2.1 supports at all.
     const selection = abi.select(target.result) catch |err| switch (err) {
@@ -531,30 +498,15 @@ fn addTargetCheck(
 /// omitted: the nested build has the same default, but a nested build that
 /// guessed would be a different library from the one under test.
 ///
-/// Run, or only install. `hostCanExecute` asks the question `Step.Run` will ask
-/// about the nested consumer's binary, so the nested build gets `run` when this
-/// host can execute the selected target and `install` when it cannot. The query
-/// cannot answer that: `Query.isNative` is true only when every field is null,
-/// so `-Dtarget=x86_64-linux-gnu` was never native on an x86_64 Linux host.
+/// Run when this host can execute the selected target, and install otherwise.
+/// The host helper asks the external-executor question at make time, after the
+/// maker resolves executor switches and libc runtimes.
 ///
-/// `-Dlua-root` is forwarded, and only when there is one. `consumer/build.zig`
-/// declares the option and hands it to its own `b.dependency("luajit", ...)`
-/// unchanged, which is what makes that legal: the build runner rejects an
-/// option no build script reads (`std/Build.zig:1644-1655`, reached from
-/// `build_runner.zig:487`), so an option the consumer did not declare would
-/// fail the nested build rather than configure it. What travels is the
-/// *resolved* root -- `lua_root_option orelse install_root(b)`, `build.zig:295`
-/// -- and not the text the caller typed, so the library the consumer links is
-/// the one this build installed rather than one that resolved the same question
-/// again and might answer it differently. A build with no resolved root passes
-/// nothing and leaves the library's own policy in force.
-///
-/// `--prefix` itself does not reach the library, and cannot: the library reaches
-/// this proof as `consumer`'s `b.dependency` child, and `createChildOnly`
-/// replaces that child's install prefix with a cache digest directory whatever
-/// the nested build was told (`std/Build.zig:721-723`). It does travel to the
-/// nested build itself, so the consumer package installs where the caller
-/// asked; what carries the root past that is the option above.
+/// An explicit `-Dlua-root` travels unchanged. Otherwise the helper forwards
+/// the same absolute non-cache install root used by the outer native graph.
+/// A dependency's disposable cache prefix remains upstream's default instead.
+/// The install prefix itself travels only when it differs from `zig-out`;
+/// the Lua-root option carries the root through the consumer's dependency.
 ///
 /// The target travels down as the caller's *query*, never as this graph's
 /// resolved target. `Target.Query.zigTriple` spells arch, OS, versions and ABI
@@ -586,25 +538,11 @@ fn addTargetCheck(
 /// The CPU is forwarded for the same reason -- the nested build has to be told
 /// what the parent was told -- and for the reason below.
 ///
-/// Both cache directories travel, and they are not the same directory. The
-/// local one gets the `consumer` subdirectory because two build graphs must not
-/// write the same manifest directory. The global one is forwarded exactly as
-/// the runner resolved it, because that cache is keyed by content and shared by
-/// contract -- `lib/std/Build.zig:122` holds it on the graph,
-/// `build_runner.zig:73-76` fills `path` unconditionally and `:89` assigns it,
-/// and `lib/std/Build/Step/Compile.zig:1478-1479` is the compiler's own
-/// two-token emit. A nested build left to resolve its own would look outside
-/// the approved root for a selection this build was given. `Directory.path` is
-/// optional (`lib/std/Build/Cache/Directory.zig:13`) and this runner never
-/// leaves it null, so the guard is the type's and no fallback string is
-/// substituted.
-///
-/// The install prefix travels too, when the caller named one. A nested build
-/// with no `--prefix` resolves `consumer/zig-out`, a build artefact inside a
-/// source package; a relative value would resolve against that `consumer/`
-/// working directory rather than this build's root, so it is made absolute
-/// first. A caller who named none is left alone: the nested build then resolves
-/// the same `zig-out` this graph would.
+/// The maker resolves both cache directories. The nested local cache gets a
+/// `consumer` subdirectory; the content-addressed global cache is shared.
+/// Install-prefix forwarding is also decided at make time: the default leaves
+/// the consumer's own `zig-out` policy alone, and other prefixes travel as
+/// absolute paths so the nested working directory cannot change their meaning.
 ///
 /// The job width and the summary travel with it. `--summary` is two tokens
 /// because that is how the build runner spells it
@@ -625,10 +563,9 @@ fn runConsumer(
 
     // `b.graph.zig_exe` is the compiler running this build script, so the nested
     // build is the same toolchain rather than whatever is on PATH.
-    const run = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
+    const run = @import("port017.zig").consumer(b, target);
     run.setName("consumer package");
     run.setCwd(b.path("consumer"));
-    run.addArg(if (hostCanExecute(b, target)) "run" else "install");
     run.addArg(b.fmt("-Dtarget={s}", .{triple}));
     run.addArg(b.fmt("-Doptimize={s}", .{@tagName(optimize)}));
     run.addArg(b.fmt("-Dlinkage={s}", .{@tagName(linkage)}));
@@ -664,13 +601,6 @@ fn runConsumer(
             target.query.serializeCpuAlloc(b.allocator) catch @panic("OOM"),
         }));
     }
-    // Forward the selected executor and its dynamic-linker support.
-    if (b.enable_darling) run.addArg("-fdarling");
-    if (b.enable_qemu) run.addArg("-fqemu");
-    if (b.enable_rosetta) run.addArg("-frosetta");
-    if (b.enable_wasmtime) run.addArg("-fwasmtime");
-    if (b.enable_wine) run.addArg("-fwine");
-    if (b.libc_runtimes_dir) |runtimes| run.addArgs(&.{ "--libc-runtimes", runtimes });
     // The nested build carries this workspace's job count in its own command
     // line: nothing can append a `-j` to a `Run` step's command, so a nested
     // build left to derive its own width takes `cpu_count - 1`
@@ -681,82 +611,14 @@ fn runConsumer(
     // The same summary the outer entry asked for, two tokens because that is
     // the runner's spelling (`build_runner.zig:262-265`).
     run.addArgs(&.{ "--summary", "all" });
-    // Two arguments, not one `--cache-dir=...`: the second is the form the build
-    // system emits to the compiler itself. Two build graphs must not write the
-    // same manifest directory, so the nested one gets a subdirectory.
-    if (b.cache_root.path) |cache| {
-        run.addArg("--cache-dir");
-        run.addArg(b.fmt("{s}/consumer", .{cache}));
-    }
-    // The global cache travels as the runner resolved it, with no subdirectory:
-    // it is keyed by content and meant to be shared, so a suffix would name a
-    // directory no other build in this workspace uses. Two tokens again --
-    // `--global-cache-dir [path]`, `build_runner.zig:1675` -- and the compiler
-    // emits it the same way (`lib/std/Build/Step/Compile.zig:1478-1479`).
-    if (b.graph.global_cache_root.path) |global| {
-        run.addArg("--global-cache-dir");
-        run.addArg(global);
-    }
-    // The install prefix this invocation resolved, handed on when the caller
-    // named one. A nested `zig build` left to resolve its own installs into
-    // `consumer/zig-out` - a build artefact inside a source package - rather
-    // than into the directory the caller asked for. A relative `--prefix`
-    // would resolve against the working directory set above, `consumer/`,
-    // and not against this build's root, so it is made absolute before it is
-    // handed on. `DESTDIR` needs no forwarding, because the nested build
-    // inherits the environment this one ran with.
-    const default_prefix = b.build_root.join(b.allocator, &.{"zig-out"}) catch @panic("OOM");
-    if (!std.mem.eql(u8, b.install_prefix, default_prefix)) {
-        const prefix = if (std.fs.path.isAbsolute(b.install_prefix))
-            b.install_prefix
-        else
-            b.pathJoin(&.{ b.graph.cache.cwd, b.install_prefix });
-        run.addArg("--prefix");
-        run.addArg(prefix);
-    }
-    // The caller's own arguments, last and behind `--`, so a runtime-loading
-    // consumer can be told which provider to load:
-    // `zig build consumer -Druntime=true -- --provider <path>`.
-    if (b.args) |args| {
-        run.addArg("--");
-        run.addArgs(args);
-    }
+    // Cache paths, prefix selection and executor flags are resolved by the maker.
+    run.addArg("--");
+    run.addPassthruArgs();
     // The nested build is this step's only observable effect.
     run.has_side_effects = true;
     return run;
 }
 
-/// True when this build can execute `target`'s binaries.
-///
-/// That is `std.zig.system.getExternalExecutor`, the question `Step.Run` asks
-/// about the artifact it is about to spawn, with the build runner's own executor
-/// switches in `allow_*` and the consumer's libc requirement in `link_libc`.
-/// `.qemu` is gated apart: `Run` fails a cross GNU-libc target that has no
-/// runtimes directory rather than skipping it, so this installs rather than runs.
-fn hostCanExecute(b: *std.Build, target: std.Build.ResolvedTarget) bool {
-    const host = &b.graph.host.result;
-    const candidate = &target.result;
-    const options: std.zig.system.GetExternalExecutorOptions = .{
-        .allow_darling = b.enable_darling,
-        .allow_qemu = b.enable_qemu,
-        .allow_wasmtime = b.enable_wasmtime,
-        .allow_wine = b.enable_wine,
-        // The consumer links libc through the library module it imports, which
-        // is the fact `Run`'s `need_cross_libc` and `.link_libc` are told here.
-        .qemu_fixes_dl = candidate.isGnuLibC() and b.libc_runtimes_dir != null,
-        .link_libc = true,
-    };
-    return switch (std.zig.system.getExternalExecutor(b.graph.io, host, candidate, options)) {
-        .native, .rosetta => true,
-        // Reachable only for an executor the switches above enabled.
-        .wine, .wasmtime, .darling => true,
-        // Not a yes on its own: `Run` fails a cross GNU-libc target with no
-        // runtimes directory rather than skipping the run.
-        .qemu => !(candidate.isGnuLibC() and b.libc_runtimes_dir == null),
-        // No dynamic linker to load, or no enabled executor for this target.
-        .bad_dl, .bad_os_or_cpu => false,
-    };
-}
 
 /// A step that requires upstream's own architecture refusal for one target.
 ///
@@ -993,15 +855,8 @@ fn addPkgConfig(
     target: std.Target,
     release_version: []const u8,
 ) std.Build.LazyPath {
-    const template = b.build_root.handle.readFileAlloc(
-        b.graph.io,
-        sources.pkg_config_template,
-        b.allocator,
-        .limited(1 << 16),
-    ) catch |err| std.debug.panic(
-        "luajit: cannot read the pkg-config template {s}: {s}",
-        .{ sources.pkg_config_template, @errorName(err) },
-    );
+    b.dependOnFileContents(b.path(sources.pkg_config_template));
+    const template = @embedFile("etc/luajit.pc");
 
     // `INSTALL_LMOD=` and `INSTALL_CMOD=` are deliberately not rewritten.
     // `SED_PC` (`Makefile:86-90`) touches `prefix=`, `multilib=`, `relver=` and,
@@ -1071,15 +926,12 @@ fn addHeaderCheck(b: *std.Build, linkage: std.builtin.LinkMode, selection: abi.S
     // `includedir=${prefix}/include/luajit-${majver}.${minver}`
     // (`etc/luajit.pc:13`) and `libdir=${exec_prefix}/${multilib}`
     // (`etc/luajit.pc:11`) with `libname=luajit-${abiver}` (`etc/luajit.pc:12`).
-    // Reading them as strings rather than as `std.Build.LazyPath`s is
-    // deliberate: this program is an **external** C consumer, compiled by a
-    // `zig cc` line that a reader can compare against `etc/luajit.pc` field by
-    // field. Resolving it through a build module would hide those fields
-    // behind graph plumbing, which is exactly the thing this step exists to
-    // check.
-    const prefix = b.getInstallPath(.prefix, "");
-    const include_dir = b.fmt("{s}/include/luajit-{s}", .{ prefix, graph.mm_version });
-    const lib_dir = b.fmt("{s}/lib", .{prefix});
+    // Install locations are unavailable until the maker resolves them.
+    const include_dir: std.Build.LazyPath = .{ .relative = .{
+        .base = .install_include,
+        .sub_path = b.fmt("luajit-{s}", .{graph.mm_version}),
+    } };
+    const lib_dir: std.Build.LazyPath = .{ .relative = .{ .base = .install_lib } };
 
     // A separate `Step.Compile` rather than a `Run` of a `zig cc` line: the
     // binary has to be a real build artifact, because it is what `addRunArtifact`
@@ -1094,8 +946,8 @@ fn addHeaderCheck(b: *std.Build, linkage: std.builtin.LinkMode, selection: abi.S
     // the install tree and not `src/`: a build whose archive is right but whose
     // installed headers are missing or stale passes every in-tree gate and fails
     // here, which is the only reason this step exists.
-    mod.addIncludePath(.{ .cwd_relative = include_dir });
-    mod.addLibraryPath(.{ .cwd_relative = lib_dir });
+    mod.addIncludePath(include_dir);
+    mod.addLibraryPath(lib_dir);
     // `etc/luajit.pc:23`, `Libs: -L${libdir} -l${libname}`, with
     // `libname=luajit-${abiver}` (`etc/luajit.pc:12`). The preferred mode follows
     // the `-Dlinkage` the rest of the build used, so a static install is not
@@ -1107,10 +959,15 @@ fn addHeaderCheck(b: *std.Build, linkage: std.builtin.LinkMode, selection: abi.S
         .linux, .other => mod.linkSystemLibrary("dl", .{}),
         else => {},
     }
+    // The installed archive requires the same external unwinder as the native
+    // graph and its generated Libs.private metadata.
+    if (linkage == .static and needsExternalUnwinder(b.graph.host.result)) {
+        mod.linkSystemLibrary("gcc_s", .{ .use_pkg_config = .no });
+    }
     // A shared library must be findable at run time from a directory the binary
     // does not sit in. Without this the `-Dlinkage=dynamic` run would fail to
     // start for a reason that has nothing to do with the headers.
-    if (linkage == .dynamic) mod.addRPath(.{ .cwd_relative = lib_dir });
+    if (linkage == .dynamic) mod.addRPath(lib_dir);
 
     mod.addCSourceFile(.{ .file = b.path("build_support/header_check_a.c") });
     mod.addCSourceFile(.{ .file = b.path("build_support/header_check_b.c") });

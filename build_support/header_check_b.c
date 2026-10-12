@@ -97,14 +97,14 @@ static int ljh_writer(lua_State *L, const void *p, size_t sz, void *ud)
     }
     grown = (unsigned char *)realloc(buf->data, want);
     if (grown == NULL) {
-      return 0; /* a non-zero return aborts the dump */
+      return 1; /* a non-zero return aborts the dump */
     }
     buf->data = grown;
     buf->cap = want;
   }
   memcpy(buf->data + buf->len, p, sz);
   buf->len += sz;
-  return 1;
+  return 0;
 }
 
 /*
@@ -148,7 +148,7 @@ void ljh_run_all(void)
   ljh_check("loop sums 1..100 to 5050", status == 0 && value == 5050.0, "n(n+1)/2");
 
   /* `#'ABC'` is 3: the string library's `upper` is unchanged across Lua versions. */
-  value = ljh_run("return #('abc':upper())", &status);
+  value = ljh_run("return #(('abc'):upper())", &status);
   ljh_check("string library upper() gives length 3", status == 0 && value == 3.0, "#'ABC'");
 
   /* `math.floor` truncates in Lua 5.1, so 3.7 becomes 3. */

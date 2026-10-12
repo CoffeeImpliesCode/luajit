@@ -27,13 +27,12 @@
 #
 # Nothing here was evaluated, built or run to produce this file.
 
-{ pkgs, lib, ... }:
+{ pkgs, lib, inputs, ... }:
 
 let
-  # `pkgs.zig_0_16` is the attribute name nixpkgs derives from `0.16.0`.
-  # Asserting the exact version is what stops a future nixpkgs bump from
-  # silently moving this SDK onto another compiler.
-  zig = pkgs.zig_0_16;
+  # Keep the devenv bootstrap package set separate from the pinned compiler.
+  zigPkgs = import inputs.nixpkgs-unstable { system = pkgs.stdenv.hostPlatform.system; };
+  zig = zigPkgs.zig_0_17;
 
   # One derivation, two variants. `package.nix` is the whole build; these
   # attribute values are only forced when someone asks for the output.
@@ -161,10 +160,10 @@ in
     };
 
     "sdk:test-release-safe" = {
-      description = "the same suite in ReleaseSafe";
+      description = "the same suite in safe mode";
       exec = ''
         ${in_sdk_build}
-        zig build test -Doptimize=ReleaseSafe ${build_flags}
+        zig build test -Doptimize=safe ${build_flags}
       '';
     };
 
@@ -207,7 +206,7 @@ in
         ${in_sdk_build}
         zig build install --prefix "${install_prefix}" ${build_flags}
         zig build test ${build_flags}
-        zig build test -Doptimize=ReleaseSafe ${build_flags}
+        zig build test -Doptimize=safe ${build_flags}
         zig build smoke ${build_flags}
         zig build check ${build_flags}
         zig build consumer ${build_flags}
@@ -233,9 +232,9 @@ in
   assertions = [
     {
       assertion =
-        lib.assertMsg (zig.version == "0.16.0")
-          "this SDK builds with Zig 0.16.0; devenv resolved ${zig.version}";
-      message = "luajit needs Zig 0.16.0.";
+        lib.assertMsg (zig.version == "0.17.0")
+          "this SDK builds with Zig 0.17.0; devenv resolved ${zig.version}";
+      message = "luajit needs Zig 0.17.0.";
     }
   ];
 }

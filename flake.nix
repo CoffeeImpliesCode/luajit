@@ -29,9 +29,8 @@
   description = "LuaJIT 2.1 rolling: a JIT compiler for Lua 5.1, built from this repository's own source";
 
   inputs = {
-    # Pinned by revision, not by branch. This is the tree that exposes
-    # `zig_0_16`, and the revision is the same one `devenv.yaml` names.
-    nixpkgs.url = "github:NixOS/nixpkgs/c7def046b9a883d46974757852106483d741586f";
+    # The compiler package set is pinned independently of devenv's bootstrap.
+    nixpkgs.url = "github:NixOS/nixpkgs/6510408d147d8c5e6d76043e899e9251756f6a75";
   };
 
   outputs =
@@ -44,13 +43,13 @@
     {
       packages = forAllSystems (pkgs: rec {
         # `zig` is named at both call sites: callPackage would otherwise fill it
-        # from `pkgs.zig`, a moving alias, rather than the pinned 0.16.0.
+        # from `pkgs.zig`, a moving alias, rather than the pinned 0.17.0.
         static = pkgs.callPackage ./package.nix {
-          zig = pkgs.zig_0_16;
+          zig = pkgs.zig_0_17;
           linkage = "static";
         };
         shared = pkgs.callPackage ./package.nix {
-          zig = pkgs.zig_0_16;
+          zig = pkgs.zig_0_17;
           linkage = "dynamic";
         };
         default = static;
@@ -59,13 +58,13 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           # Tools only. The Zig version is asserted rather than assumed, because
-          # `build.zig.zon` declares `.minimum_zig_version = "0.16.0"` and a
+          # `build.zig.zon` declares `.minimum_zig_version = "0.17.0"` and a
           # shell that silently carried another release would make that a
           # statement about nothing.
           packages = [
             (
-              assert pkgs.zig_0_16.version == "0.16.0";
-              pkgs.zig_0_16
+              assert pkgs.zig_0_17.version == "0.17.0";
+              pkgs.zig_0_17
             )
             pkgs.pkg-config
             pkgs.git

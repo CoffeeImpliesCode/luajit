@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .linkage = linkage,
         .runtime = runtime_loaded,
-        .lua_root = lua_root,
+        .@"lua-root" = lua_root,
     });
 
     // No `link_libc` here on purpose. The C requirement belongs to the library
@@ -114,7 +114,7 @@ pub fn build(b: *std.Build) void {
     // Forwarded so `zig build run -Druntime=true -- --provider <path>` reaches
     // `src/main.zig`, which reads exactly that and refuses to guess without.
     // With no arguments this is inert, so a linked run is unchanged.
-    if (b.args) |args| run_exe.addArgs(args);
+    run_exe.addPassthruArgs();
     const run_step = b.step("run", "Build and run the consumer program");
     run_step.dependOn(&run_exe.step);
 

@@ -7,8 +7,8 @@
 # assignments and nothing else. No command runs, no compiler is probed, and no
 # path in here names a host.
 #
-# There is deliberately no CROSS_MATRIX. The published 53-platform Zig 0.16
-# Tier 1/2 table is the matrix this package is checked against, and a matrix
+# There is deliberately no CROSS_MATRIX. The harness's published Tier 1/2
+# table is the matrix this package is checked against, and a matrix
 # named here would replace it. There is no TARGETS array either, for the same
 # reason: a subset selected here would narrow the run rather than add to it.
 # Both belong on the command line, where --targets selects from the active
