@@ -1,90 +1,15 @@
 // SPDX-License-Identifier: MIT
-//
-//! Build-time generator for the runtime dispatch module.
-//!
-//! This program runs on the build machine, reads what `b.addTranslateC` actually
-//! produced for the selected target and configuration, and writes two files:
-//! the dispatch module an SDK imports in place of the translated header, and a
-//! patched copy of that translation whose one prologue line now names the
-//! dispatch. Nothing about the native API is written by hand. Every type,
-//! constant, parameter and return type in the output is text taken from the
-//! translation step's own output, so the dispatch cannot claim a symbol the
-//! header does not declare.
-//!
-//! ## What it produces
-//!
-//!   * one table field per routed symbol, typed from the translated header's own
-//!     declaration for that symbol, so the pointer stored at load time has
-//!     exactly the C function pointer type a C compiler would have used,
-//!     variadic signatures included;
-//!   * one wrapper per routed function, one accessor per routed object, one
-//!     forwarding wrapper per macro alias and one accessor per object alias;
-//!   * the translated namespace re-exported: `pub const NAME = c_native.NAME;`
-//!     for a public type, constant or value. Those are re-exports of the *same*
-//!     declarations, not copies, so a type named by this module is the same
-//!     nominal type the translated header declares;
-//!   * the declarations that cannot be routed, copied with the references this
-//!     module cannot satisfy rewritten to ones it can;
-//!   * a second file: the same translated declarations with one change, the
-//!     `const __root = @This();` prologue Aro writes, replaced by an import of
-//!     the dispatch. That is what makes a declaration nested inside a
-//!     translated type - PCRE2's per-width aliases, spglib's
-//!     `SpglibDataset.spg_free_dataset`, gmp's `__gmp_randstate_struct` members
-//!     - name the routed wrapper rather than the raw extern, while the type
-//!     itself stays the one nominal type the header declares.
-//!
-//! ## What it refuses to do
-//!
-//! It does not guess. A translated header that does not parse, a routed function
-//! whose parameter list it cannot reproduce faithfully, an `anytype` parameter on
-//! a routed function, an exported object whose declaration has an initializer, an
-//! alias chain that loops, a call to a routed variadic function whose argument
-//! list it cannot read, a `__root` reference the dispatch could not answer: each
-//! of those stops the build with a message naming the declaration, rather than
-//! producing a dispatch that looks plausible.
-//!
-//! ## Classification
-//!
-//!   routed     an `extern` the provider is expected to export. Required at load
-//!              time; its absence fails the load.
-//!   optional   an `extern` the provider may not have. Routed into a nullable
-//!              table field and resolved when the provider does export it. A call
-//!              stops the program by name if it did not, rather than becoming a
-//!              link-time reference to a symbol nothing links.
-//!   direct     an `extern` that is really the C library's (memcpy and
-//!              friends). Copied verbatim: these must stay direct, because a
-//!              table lookup for a function the C library already linked would
-//!              add a load and an acquire check to every string operation.
-//!
-//! `optional` wins over `direct`, so a build can always talk its way back to a
-//! load-time requirement, and `direct` wins over routing, so a build can always
-//! talk its way back to a declaration the C library already provides.
-//!
-//! ## What the build has to wire
-//!
-//!   * `--output` receives the dispatch. The dispatch module imports `rt`,
-//!     `library` and `c_native` as before, plus nothing else.
-//!   * `--native-output` receives the patched translation, and *that* file, not
-//!     `translate.getOutput()`, is what the dispatch's `c_native` import names.
-//!   * the dispatch module is then added to the patched translation as its
-//!     `c_routed` import. The two modules import each other; nothing else does.
-//!   * a symbol listed as `optional` needs the loader to try it: the generated
-//!     `optional_symbols`, `optional(index)`, `assignOptional` and
-//!     `assignMissing` are the interface for that, and until the loader calls
-//!     them the field stays null and the wrapper stops the program by name.
-
+//! Builds runtime dispatch and a patched translation from the target's translated C API.
+//! Generated signatures come from that translation; unsupported declarations fail the build.
 const std = @import("std");
 const Ast = std.zig.Ast;
 const Io = std.Io;
 const Writer = std.Io.Writer;
 const Tag = std.zig.Token.Tag;
 
-/// Upper bound on the translation step's output. A real translated header is
-/// kilobytes; this exists so a wrong path cannot exhaust memory.
+/// Limits memory use when the translation file is oversized.
 const max_translated_bytes = 64 * 1024 * 1024;
 
-/// Every way this program can stop. None of them are silently recoverable: each
-/// one means the dispatch would have been wrong or incomplete.
 const Failure = error{
     TranslateUnreadable,
     TranslateDoesNotParse,
@@ -130,17 +55,11 @@ fn usage() void {
     , .{});
 }
 
-/// Everything this program is told, all of it from the build file.
 const Options = struct {
-    /// The SDK's name, used in the pre-load panic and in the file header.
     library: []const u8 = "",
-    /// Path to the file the translation step produced.
     translate: []const u8 = "",
-    /// Path this program writes the dispatch to.
     output: []const u8 = "",
-    /// Path this program writes the patched translation to. Empty means this
-    /// build does not want one, which this generator then requires no public
-    /// declaration to depend on.
+    /// Empty when no patched translation is required.
     native_output: []const u8 = "",
     /// `extern` declarations to keep direct because the C library provides them.
     noise: std.StringHashMapUnmanaged(void) = .empty,
@@ -179,11 +98,7 @@ const Options = struct {
         return self;
     }
 
-    /// What a declaration is, once the three lists have been consulted.
-    ///
-    /// The order of the tests is the whole policy: a build that names a symbol
-    /// as excluded means it, whatever else it says about the same symbol, so a
-    /// deliberate choice is never quietly undone by a broader rule.
+    /// Excluded and optional names are not required; noise stays direct; other externs route.
     const Route = enum { routed, optional, direct };
 
     fn routeOf(self: Options, name: []const u8) Route {
@@ -207,43 +122,27 @@ fn addNames(
 ) std.mem.Allocator.Error!void {
     var parts = std.mem.splitScalar(u8, list, ',');
     while (parts.next()) |part| {
-        // A build file wraps long lists, and a wrapped name that kept its
-        // newline would silently match nothing. Trimming here is what makes a
-        // wrapped list mean what it looks like.
+        // Trim wrapped names so whitespace does not create unmatched entries.
         const name = std.mem.trim(u8, part, " \t\r\n");
         if (name.len == 0) continue;
         try set.put(arena, name, {});
     }
 }
 
-/// The name the patched translation imports the dispatch under. The build adds
-/// that import to the generated file.
+/// Alias imported by the patched translation for its dispatch module.
 const routed_import = "c_routed";
-
-// ---------------------------------------------------------------------------
-// Declarations
-//
-// Deciding and writing are separate passes because the table's fields are only
-// known once every declaration has been seen. A file written in one go cannot
-// be left half finished, and nothing is written until the whole plan exists.
-// ---------------------------------------------------------------------------
 
 const Class = enum {
     /// `extern fn`, routed: a required table field and a wrapper.
     routed_function,
-    /// `extern var`/`extern const`, routed: a required table field and an
-    /// accessor.
+    /// Routed object with a required address accessor.
     routed_data,
-    /// As above, but the provider may not export it: a nullable table field, and
-    /// a wrapper that stops the program by name when it is absent.
+    /// Optional function with a nullable field and guarded wrapper.
     optional_function,
     optional_data,
     /// Copied, with this module's own references rewritten where needed.
     copied,
-    /// The translation's `const __root = @This();` prologue. Written in neither
-    /// output: the patched translation has this one line repointed at the
-    /// dispatch, and the dispatch declares a `__root` of its own, so copying it
-    /// here would declare the name twice in one file.
+    /// Aro's `__root` prologue is repointed in the patched translation, not copied.
     root_prologue,
     /// Re-exported from the patched translation rather than copied.
     reexport,
@@ -262,8 +161,7 @@ const Decl = struct {
     is_pub: bool = false,
     /// Set when this declaration's own text names `__root`.
     uses_root: bool = false,
-    /// Set when this declaration's own text names something this module does
-    /// not declare under that name.
+    /// Set when a copied declaration references a dispatch-owned name.
     needs_rewrite: bool = false,
 
     /// The name this declaration aliases, when its initializer is one.
@@ -276,11 +174,8 @@ const Decl = struct {
     fixed_params: usize = 0,
     params: []const u8 = "",
     tail: []const u8 = "",
-    /// The table field's type: a function pointer for a function, and for an
-    /// object the address the provider owns. A mutable exported object is
-    /// reached through a mutable pointer, because the provider writes through
-    /// that address; a `const` object is reached through a const pointer, which
-    /// is what the header declares.
+    /// Translated function-pointer type or pointer to a provider-owned object.
+    /// Object mutability follows the header.
     field_type: []const u8 = "",
     /// An @extern pointer already denotes the object's address, not its value.
     address_value: bool = false,
@@ -289,16 +184,13 @@ const Decl = struct {
 
 const Plan = struct {
     decls: []const Decl,
-    /// Every routed object name: a copied declaration reads it through its
-    /// accessor, because this module declares no such value itself.
+    /// Routed object names used to rewrite copied declarations to accessors.
     data_names: std.StringHashMapUnmanaged(bool),
-    /// Every routed variadic function name, with the number of arguments that
-    /// precede the variable part.
+    /// Routed variadic names and the count of fixed arguments.
     variadic_names: std.StringHashMapUnmanaged(usize),
     /// Every `__root.NAME` the translation uses.
     root_refs: std.StringHashMapUnmanaged(void),
-    /// True when a declaration copied into the dispatch refers to `__root`, so
-    /// the dispatch has to declare one of its own.
+    /// Whether copied declarations need a dispatch-side `__root`.
     dispatch_needs_root: bool,
     root_decl: ?Decl = null,
 };
@@ -336,9 +228,7 @@ fn generate(
     try writeTableClose(w, &plan);
     for (plan.decls) |decl| switch (decl.class) {
         .copied => try writeCopied(w, arena, &tree, decl, &plan),
-        // Already written by the preamble, and only when a copied declaration
-        // refers to one; the translation's own prologue is repointed by the
-        // patch, so writing it here too would declare the name twice.
+        // The patched translation owns the prologue; do not duplicate it here.
         .root_prologue => {},
         .reexport => try w.print("pub const {s} = c_native.{s};\n", .{ decl.name, decl.name }),
         .routed_function, .optional_function => try writeFunction(w, decl),
@@ -372,10 +262,6 @@ fn readSentinel(io: Io, arena: std.mem.Allocator, path: []const u8) Failure![:0]
     };
 }
 
-// ---------------------------------------------------------------------------
-// Planning
-// ---------------------------------------------------------------------------
-
 fn planDeclarations(
     arena: std.mem.Allocator,
     options: Options,
@@ -388,8 +274,7 @@ fn planDeclarations(
         const decl = switch (tree.nodeTag(node)) {
             .fn_decl, .fn_proto_simple, .fn_proto_multi, .fn_proto_one, .fn_proto => try planFunction(arena, options, tree, node),
             .simple_var_decl, .aligned_var_decl, .global_var_decl => try planVariable(arena, options, tree, node),
-            // A test declaration, a `usingnamespace`, a comptime block: none of
-            // these is part of the library's interface.
+            // Only top-level function and variable declarations are part of the interface.
             else => continue,
         };
         if (decl.name.len != 0 and !index.contains(decl.name)) {
@@ -398,9 +283,7 @@ fn planDeclarations(
         try decls.append(arena, decl);
     }
 
-    // An alias is a forwarding wrapper or an accessor only once the chain it
-    // follows has been read to its end. Chains loop when a header defines `a` as
-    // `b` and `b` as `a`, and that is a declaration to refuse rather than guess.
+    // Resolve alias chains before choosing a wrapper; refuse cycles.
     for (decls.items) |*decl| {
         if (decl.alias_of.len == 0) continue;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -421,8 +304,7 @@ fn planDeclarations(
             current = next.alias_of;
         }
 
-        // An initializer naming something the translation never declared at the
-        // top level is left as written: the text is the only description of it.
+        // Leave aliases to undeclared names unchanged.
         const terminal = index.get(current) orelse continue;
         decl.target = current;
         const reached = decls.items[terminal];
@@ -442,8 +324,7 @@ fn planDeclarations(
                 decl.field_type = reached.field_type;
                 decl.address_value = reached.address_value;
             },
-            // A private declaration is copied into the dispatch, and so is an
-            // alias onto it: the text then finds its target here.
+            // Private aliases remain copied into the dispatch.
             else => decl.class = .copied,
         }
     }
@@ -464,11 +345,7 @@ fn planDeclarations(
     for (decls.items) |*decl| {
         if (std.mem.eql(u8, decl.name, "__root")) {
             root_decl = decl.*;
-            // Aro opens its output with this one declaration and the dispatch
-            // declares a `__root` of its own, so it is classified rather than
-            // copied. Only that prologue is repointed: any other spelling of
-            // the name stays a copied declaration, and `writePatchedNative`
-            // refuses a file whose prologue is not the one it expects.
+            // Repoint only Aro's exact `__root = @This()` prologue; preserve other uses.
             if (isThisPrologue(arena, tree, decl.*)) decl.class = .root_prologue;
             continue;
         }
@@ -536,9 +413,7 @@ fn planFunction(
     else
         "";
 
-    // An inline body, or an export, is defined here rather than imported.
-    // Copying it keeps the body, its inlining behaviour and everything it
-    // references exactly as the translation step wrote them.
+    // Copy inline bodies and exports as translated; they are definitions, not imports.
     if (!std.mem.eql(u8, keyword, "extern")) return decl;
 
     switch (options.routeOf(name)) {
@@ -555,13 +430,8 @@ fn unnamedDecl(tree: *const Ast, node: Ast.Node.Index) Decl {
     return .{ .name = "", .first = last, .last = last, .class = .copied };
 }
 
-/// The parameter list, the return clause and the field type, taken from the
-/// translated prototype itself.
-///
-/// The field type keeps the parameter names and the `...` of a variadic
-/// prototype verbatim, because that text is the exact C signature. The wrapper
-/// renames each parameter, so a shadowing parameter in the translated header
-/// cannot change what the wrapper passes through.
+/// Extracts parameters, return type, and field type from the translated prototype.
+/// Wrapper parameters are renamed to preserve the C signature without shadowing.
 fn planSignature(
     arena: std.mem.Allocator,
     tree: *const Ast,
@@ -605,9 +475,7 @@ fn planSignature(
         );
         return error.UnsupportedDeclaration;
     }
-    // A variadic wrapper takes its variable arguments as one tuple, which is how
-    // Zig itself calls a C variadic function, so it needs no calling convention
-    // of its own.
+    // Zig passes C variadic arguments as a tuple; the wrapper needs no calling convention.
     const tail = if (variadic)
         try std.fmt.allocPrint(arena, " {s}", .{return_text})
     else
@@ -633,9 +501,7 @@ fn planVariable(
     const var_decl = tree.fullVarDecl(node) orelse return unnamedDecl(tree, node);
     const last = declarationEndToken(tree, node);
     const mut_token = var_decl.ast.mut_token;
-    // A quoted name is a string literal token, and its spelling is not an
-    // identifier this module could name in a table field. Such a declaration is
-    // left exactly as the translation wrote it.
+    // Quoted names cannot name table fields, so leave them unchanged.
     const name = switch (tree.tokenTag(mut_token + 1)) {
         .identifier => declarationName(tree, mut_token + 1, last) orelse "",
         else => "",
@@ -653,7 +519,7 @@ fn planVariable(
         .is_pub = var_decl.visib_token != null,
     };
 
-    // The prologue `__root` is emitted by the patched translation instead.
+    // The patched translation owns the `__root` prologue.
     if (std.mem.eql(u8, name, "__root")) return decl;
     if (name.len == 0) return decl;
 
@@ -672,10 +538,8 @@ fn planVariable(
                 };
                 const type_first = tree.firstToken(type_node);
                 const type_last = tree.lastToken(type_node);
-                // Evaluating @TypeOf on an @extern constant can emit its
-                // address into debug information and create a direct link.
-                // Copy only the declared pointer type; its named types are
-                // still re-exported from the one nominal translated module.
+                // Do not evaluate `@TypeOf` on an extern constant; it can emit a direct link.
+                // Reuse translated named types to preserve nominal identity.
                 decl.field_type = tree.source[
                     tree.tokenStart(type_first)..tree.tokenStart(type_last) + tree.tokenSlice(type_last).len
                 ];
@@ -684,18 +548,13 @@ fn planVariable(
             }
         }
         if (initializerAlias(tree, decl.first, last)) |alias_of| decl.alias_of = alias_of;
-        // A private declaration cannot be imported from another module at all,
-        // so it is copied. A public one is re-exported, which is what keeps
-        // `c.mpz_t` and `c_native.mpz_t` one nominal type.
+        // Copy private declarations; re-export public ones to preserve nominal types.
         if (!decl.is_pub or decl.alias_of.len != 0) return decl;
         decl.class = .reexport;
         return decl;
     }
 
-    // Exported data. The table holds the object's address and the accessor hands
-    // that address out. A re-export would name an address this module cannot
-    // have at compile time, and a copy would break any write the C side makes
-    // through the symbol.
+    // Route object addresses, not values; copies break writes through the provider's object.
     switch (options.routeOf(name)) {
         .direct => return decl,
         .routed => decl.class = .routed_data,
@@ -739,13 +598,8 @@ fn dataTypeText(
     return arena.dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
 }
 
-/// The single name an initializer refers to, when it refers to one.
-///
-/// The translation spells an alias two ways: `pub const mpz_init = __gmpz_init;`
-/// for a macro the preprocessor renamed, and
-/// `pub const spg_free_dataset = __root.spg_free_dataset;` for one Aro placed
-/// inside a type. Both are one identifier after at most a `__root.` prefix, and
-/// neither is a computation, so the tokens between `=` and `;` say which it is.
+/// Returns a single identifier alias, optionally prefixed by `__root.`.
+/// Covers macro aliases and names emitted inside translated types.
 fn initializerAlias(
     tree: *const Ast,
     first: Ast.TokenIndex,
@@ -782,11 +636,8 @@ fn initializerAlias(
     return name;
 }
 
-/// The names a declaration introduces for itself inside its own text.
-///
-/// A parameter, a local, a capture and a struct field are all an identifier
-/// either preceded by a keyword that introduces it or followed by a colon. Those
-/// are collected so a rewritten reference never lands on one.
+/// Collects parameter, local, capture, and field names introduced in a declaration.
+/// Rewrites must not capture any of these names.
 fn localNames(
     arena: std.mem.Allocator,
     tokens: Tokens,
@@ -805,8 +656,7 @@ fn localNames(
     return names;
 }
 
-/// Whether a copied declaration names something this module cannot declare, and
-/// so has to be rewritten.
+/// Whether a copied declaration references a name supplied by the dispatch.
 fn usesDispatchName(
     arena: std.mem.Allocator,
     tokens: Tokens,
@@ -826,7 +676,7 @@ fn usesDispatchName(
     return false;
 }
 
-/// The names the translation reaches through `__root`, and whether there are any.
+/// Collects names reached through `__root`.
 fn collectRootReferences(
     arena: std.mem.Allocator,
     tokens: Tokens,
@@ -844,9 +694,8 @@ fn collectRootReferences(
     return found;
 }
 
-/// A `__root.NAME` has to name a declaration the dispatch publishes, because the
-/// patched translation resolves it there. A private declaration is not
-/// published, and a routed object has no value to name at all.
+/// Refuses `__root.NAME` references the dispatch cannot publish.
+/// Private names and routed object values are unavailable through it.
 fn checkRootReferences(options: Options, plan: *const Plan) Failure!void {
     if (options.native_output.len == 0) {
         for (plan.decls) |decl| {
@@ -894,10 +743,6 @@ fn checkRootReferences(options: Options, plan: *const Plan) Failure!void {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Writing the dispatch
-// ---------------------------------------------------------------------------
 
 fn writePreamble(w: *Writer, options: Options, needs_root: bool) !void {
     try w.writeAll(
@@ -1022,12 +867,8 @@ fn writeFunction(w: *Writer, decl: Decl) !void {
     try w.writeAll("}\n\n");
 }
 
-/// A macro the header renamed, routed to the wrapper its name reaches.
-///
-/// A forwarding wrapper rather than `pub const NAME = TARGET;` because a routed
-/// variadic function is a generic function, and a generic function has no value
-/// another declaration could name. It also keeps every hop of a chain -
-/// `mpz_kronecker` to `mpz_jacobi` to `__gmpz_jacobi` - inside this module.
+/// Writes a forwarding wrapper for a macro alias to a routed function.
+/// Forwarding preserves variadic wrappers and alias chains.
 fn writeAliasFunction(w: *Writer, decl: Decl) !void {
     try w.print("pub fn {s}({s}){s} {{\n", .{ decl.name, decl.params, decl.tail });
     try w.print("    requireReady(\"{s}\");\n", .{decl.name});
@@ -1056,12 +897,8 @@ fn writeDataAccessor(w: *Writer, decl: Decl) !void {
     try w.writeAll("}\n\n");
 }
 
-/// A macro the header renamed onto an exported object.
-///
-/// `pub const gmp_version = __gmp_version;` names a value, and the only value
-/// this module could name would be an address it cannot have at compile time.
-/// The alias gets its own guarded accessor instead, returning the same live
-/// address its target's accessor returns: never a snapshot of it.
+/// Writes a guarded accessor for a macro alias to a routed object.
+/// Returns the target's live address, not a snapshot.
 fn writeAliasDataAccessor(w: *Writer, decl: Decl) !void {
     try w.print("pub fn {s}Addr() {s} {{\n", .{ decl.name, decl.field_type });
     try w.print("    requireReady(\"{s}\");\n", .{decl.name});
@@ -1237,15 +1074,8 @@ fn writeIndexArms(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Writing the patched translation
-//
-// Aro opens its output with `const __root = @This();` and uses that name for
-// every macro the preprocessor placed inside a type. Repointing that one line at
-// this module is what makes those nested declarations name the routed wrappers
-// while the types themselves stay the header's own nominal types. No other token
-// of the translation changes.
-// ---------------------------------------------------------------------------
+// Redirect Aro's `__root = @This()` prologue so nested declarations use dispatch wrappers.
+// Preserve every other translated token.
 
 fn writePatchedNative(arena: std.mem.Allocator, tree: *const Ast, root: ?Decl) Failure![]const u8 {
     var out: Writer.Allocating = .init(arena);
@@ -1270,8 +1100,7 @@ fn writePatchedNative(arena: std.mem.Allocator, tree: *const Ast, root: ?Decl) F
     return out.toOwnedSlice();
 }
 
-/// Whether the declaration is the `const __root = @This();` Aro opens its
-/// output with, which is the one line this generator repoints.
+/// Matches the exact `const __root = @This();` prologue emitted by Aro.
 fn isThisPrologue(arena: std.mem.Allocator, tree: *const Ast, decl: Decl) bool {
     const tokens = significantTokens(arena, tree, decl.first, decl.last) catch return false;
     if (tokens.len() < 4) return false;
@@ -1282,17 +1111,8 @@ fn isThisPrologue(arena: std.mem.Allocator, tree: *const Ast, decl: Decl) bool {
     return std.mem.eql(u8, tokens.slice(last - 3), "@This");
 }
 
-// ---------------------------------------------------------------------------
-// Copied declarations
-//
-// A copied declaration keeps its own text, with two exceptions. A name this
-// module does not declare - a routed object, which is reached through its
-// accessor - becomes that accessor. A call to a routed variadic function, whose
-// wrapper takes its variable arguments as a tuple, is given that tuple. Both
-// are decided from the tokens and the scopes inside the declaration, so a local
-// variable, a struct field, a shadowed parameter, a quoted identifier and
-// anything inside a string or a comment are left exactly as written.
-// ---------------------------------------------------------------------------
+// Rewrite routed object references and variadic calls in copied declarations.
+// Token and scope tracking leaves shadowed names, strings, and comments unchanged.
 
 fn writeCopied(
     w: *Writer,
@@ -1309,14 +1129,8 @@ fn writeCopied(
 
     const tokens = try significantTokens(arena, tree, decl.first, decl.last);
     const locals = try localNames(arena, tokens);
-    // Where an empty tuple belongs: the closing paren of a call still owed one.
-    // One call at a time, or several that never overlap, is the ordinary case
-    // and is held in one index. A second call can arrive while the first has not
-    // closed, and then the older close moves to the stack below. Any two closes
-    // pending together are strictly nested - balanced parentheses are either
-    // nested or disjoint, and a disjoint later call is only reached once the
-    // earlier one has closed - so the innermost close is always on top and no
-    // nesting depth is assumed or capped.
+    // Pending closes are nested; the stack restores each outer call's insertion point.
+    // This avoids a fixed nesting limit for variadic calls.
     var owed_close: ?usize = null;
     var owed_nested: std.ArrayList(usize) = .empty;
     var source_cursor: usize = tree.tokenStart(decl.first);
@@ -1329,13 +1143,10 @@ fn writeCopied(
 
         if (owed_close) |close| {
             if (close == at) {
-                // That close is paid off; the next one out is the one still
-                // owed, and there is none once the stack has nothing left.
+                // Restore the next outer pending call, if any.
                 owed_close = null;
                 if (owed_nested.items.len != 0) {
-                    // Read the innermost close while the stack still holds it:
-                    // truncating first would leave the index equal to the new
-                    // length, one past the end of what is there.
+                    // Read the top index before shrinking the list; afterward it is out of range.
                     const outer = owed_nested.items.len - 1;
                     owed_close = owed_nested.items[outer];
                     owed_nested.items.len = outer;
@@ -1372,17 +1183,12 @@ fn writeCopied(
     try w.writeAll("\n");
 }
 
-/// What the identifier at `at` is, when it is a call to a routed variadic
-/// function.
-///
-/// The fixed parameters have to be there and the tuple either absent or present
-/// as the last argument, because those are the two shapes Zig itself accepts for
-/// a C variadic call. Anything else is a call this generator cannot reproduce.
+/// Classifies routed variadic calls by whether their required tuple is present.
+/// Unsupported call shapes are refused rather than rewritten.
 const VariadicCall = union(enum) {
     /// Not a call to a routed variadic function: the text stands as written.
     not_a_call,
-    /// The call is missing its tuple, which belongs immediately before the
-    /// closing paren this index names.
+    /// Missing tuple; insert it before the closing paren at this index.
     needs_tuple: usize,
     /// The tuple is already there, as the last argument.
     has_tuple,
@@ -1410,17 +1216,7 @@ fn tokenText(tree: *const Ast, token: Ast.TokenIndex) []const u8 {
     return tree.source[start..][0..tree.tokenSlice(token).len];
 }
 
-// ---------------------------------------------------------------------------
-// Token helpers
-//
-// Everything here works on tokens rather than on rendered text, because the
-// translated source is already tokenized: a brace or a semicolon inside a string
-// is part of one token, and a comment is one token too. Delimiter matching is
-// then exact, where a text scan would have to guess what is quoted.
-// ---------------------------------------------------------------------------
-
-/// The tokens of a range, with doc comments left out, so an index here counts
-/// only tokens that carry meaning.
+/// Significant tokens in a declaration range, excluding comments.
 const Tokens = struct {
     tree: *const Ast,
     items: []const Ast.TokenIndex,
@@ -1446,8 +1242,7 @@ const Tokens = struct {
         };
         return null;
     }
-    /// How many arguments the parenthesised list holds: commas at its own depth,
-    /// and zero when it is empty.
+    /// Counts commas at the list's own depth; an empty list has zero arguments.
     fn argumentCount(self: Tokens, open: usize, close: usize) usize {
         if (open + 1 >= close) return 0;
         var depth: u32 = 0;
@@ -1485,8 +1280,7 @@ fn tokenRangeText(tree: *const Ast, first: Ast.TokenIndex, last: Ast.TokenIndex)
     return tree.source[start..end];
 }
 
-/// The last token of a declaration: the `;` of a declaration without a body, or
-/// the `}` that closes one at the top level.
+/// Returns the declaration's terminal semicolon or top-level closing brace.
 fn declarationEndToken(tree: *const Ast, decl: Ast.Node.Index) Ast.TokenIndex {
     const last = tree.lastToken(decl);
     return if (last + 1 < tree.tokens.len and tree.tokenTag(last + 1) == .semicolon)
@@ -1511,12 +1305,7 @@ fn matchingRParenToken(tree: *const Ast, lparen: Ast.TokenIndex) Ast.TokenIndex 
     @panic("parsed function prototype has no closing parenthesis");
 }
 
-/// The identifier a declaration introduces.
-///
-/// A constant, a type or an exported object declaration is one name deep, so
-/// this walks forward from the `const`/`var` token to the first identifier. A doc
-/// comment is a single token and not an identifier, so it cannot be mistaken for
-/// the name.
+/// Returns the first identifier in the declaration token range.
 fn declarationName(
     tree: *const Ast,
     from: Ast.TokenIndex,

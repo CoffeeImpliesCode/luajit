@@ -1,52 +1,15 @@
 // SPDX-License-Identifier: MIT
-//
-//! Consumes the `luajit` package the way an outside project would.
-//!
-//! Everything here goes through the published surface only: `dep.module` in
-//! `build.zig`, and `@import("luajit")` here. No path reaches into the library's
-//! own tree, so if this builds and produces the answers below, the module
-//! contract is real.
-//!
-//! The answers are not values this program computed and printed for
-//! comparison:
-//!
-//!  * `_VERSION` is checked against `luajit.c.LUA_VERSION`, which is the string
-//!    the translated header carries. A header and a library that disagree would
-//!    fail here, which is the property that matters for a Lua 5.1 ABI.
-//!  * `jit.version_num` is checked against the 2.1 family range, because this
-//!    package's declarations are LuaJIT 2.1's and nothing else's.
-//!  * The sum of 1 to 1000 is 500500, and `string.format("%05d", 42)` is `00042`.
-//!  * `ffi.sizeof` is checked against Zig's own `@sizeOf` for this build, and
-//!    `ffi.C.abs(-7)` against the definition of `abs`.
-//!  * The compiler's state is read back from `jit.status`, the library's own
-//!    account of itself; its first result is that flag (`src/lib_jit.c:101-109`).
-//!  * Every name `Library.globalNames` reports for a library this program uses
-//!    is a table in the running state, and a Zig function registered from here
-//!    is callable from a script with its arguments checked through `Args`.
-//!  * The allocator figures are this program's own bookkeeping: it installs a
-//!    counting allocator, and the closing line is only printed when every block
-//!    the state allocated came back.
-//!
-//! Any mismatch prints both sides and exits non-zero.
-//!
-//! The same source builds against a linked package and against a
-//! runtime-loaded one. `luajit.runtime_loaded` is a comptime constant, so the
-//! difference is one branch and no duplicated program: in the runtime-loaded
-//! build the provider is named on the command line (`--provider <path>`) or in
-//! `LUAJIT_TEST_PROVIDER`, loaded once, and the same answers follow.
+//! Exercises linked and runtime-loaded LuaJIT through the published `luajit` module.
+//! Checks version, standard libraries, FFI layout, callbacks, and allocator cleanup.
 
 const std = @import("std");
 const luajit = @import("luajit");
 
-/// The sum of the first thousand positive integers.
 const thousand_sum: luajit.Integer = 500500;
 
-/// `"%05d"` of 42: five digits, zero padded.
 const zero_padded = "00042";
 
-/// The LuaJIT release family these declarations are. `LUAJIT_VERSION_NUM` is
-/// 20199 for the 2.1 rolling header (`src/luajit_rolling.h:34`), so a 2.1 build
-/// is in this range and a different major family is not.
+/// Bounds for LuaJIT 2.1's rolling `LUAJIT_VERSION_NUM`.
 const version_family_low: luajit.Integer = 20100;
 const version_family_high: luajit.Integer = 30000;
 
@@ -60,8 +23,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout = std.Io.File.stdout().writerStreaming(io, &buffer);
     const w = &stdout.interface;
 
-    // In a runtime-loading build every call below goes through a table that this
-    // one call fills. In a linked build the branch is not analyzed at all.
+    // Runtime builds load the explicitly named provider before any native call.
     if (comptime luajit.runtime_loaded) {
         try luajit.load(.{ .path = try providerRequest(init) });
         try w.print("luajit consumer: loaded {s}\n", .{luajit.loadedSource().?.path});
@@ -69,8 +31,7 @@ pub fn main(init: std.process.Init) !void {
         try w.print("luajit consumer: linked\n", .{});
     }
 
-    // The raw route is reachable from the same import, which is what makes the
-    // escape hatch usable without a second dependency.
+    // The published module also exposes its raw translated declarations.
     try w.print("headers say: lua {s}, luajit {s}\n", .{
         luajit.c.LUA_VERSION,
         luajit.c.LUAJIT_VERSION,
@@ -81,18 +42,12 @@ pub fn main(init: std.process.Init) !void {
 
     var state = try luajit.State.initWithAllocator(&budgetAlloc, &budget);
     state.openLibs();
-    // Ownership: the state is closed at the end of this function, and the
-    // closing check below is only reachable if everything it took came back.
+    // Defer cleanup on errors; the success path closes before checking allocator balances.
     defer state.deinit();
 
-    // `luaL_openlibs` preloads the FFI for `require` (`src/lib_init.c:32-36`)
-    // and `luaopen_ffi` registers no global of its own ("Note: no global \"ffi\"
-    // created!", `src/lib_ffi.c:855`), so the `ffi` global the checks below
-    // read is one this SDK named. Opened once, here, before anything else
-    // uses it.
+    // `openLibs` preloads FFI but does not create global `ffi`; open it explicitly.
     state.openFfi();
 
-    // The library reports the same release the header does.
     try state.run("return _VERSION, jit.version, jit.version_num", "=consumer");
     try expectText(w, "state", "_VERSION", state.toString(1), luajit.c.LUA_VERSION);
     try expectText(w, "state", "jit.version", state.toString(2), luajit.c.LUAJIT_VERSION);
@@ -104,7 +59,6 @@ pub fn main(init: std.process.Init) !void {
     }
     try w.print("{s: <24} in the 2.1 family\n", .{ "jit.version_num" });
 
-    // Protected chunk evaluation, with results read back off the stack.
     state.setTop(0);
     try state.run(
         \\local s = 0
@@ -115,7 +69,6 @@ pub fn main(init: std.process.Init) !void {
     try expectText(w, "stack", "string.format", state.toString(2), zero_padded);
     try expectText(w, "stack", "('luajit'):upper()", state.toString(3), "LUAJIT");
 
-    // A stack value built from Zig and read back through the same API.
     state.setTop(0);
     state.newTable();
     const table: luajit.Index = @intCast(state.top());
@@ -131,11 +84,7 @@ pub fn main(init: std.process.Init) !void {
     state.pop(1);
     state.pop(1);
 
-    // The library names this SDK reports are the globals the running state
-    // actually has. `run` calls a chunk with no arguments at all, so a chunk
-    // that needs one is loaded and called through `call`; `rawget` on a table
-    // with a string key cannot raise, which is what makes the unprotected call
-    // the right one here.
+    // Check each reported library name against `_G` in the running state.
     for ([_]luajit.Library{ .base, .package, .table, .string, .math }) |library| {
         for (library.globalNames()) |name| {
             state.setTop(0);
@@ -152,25 +101,15 @@ pub fn main(init: std.process.Init) !void {
     }
     state.setTop(0);
 
-    // A Zig function is callable from a script through the same published
-    // surface, and reads its argument by number: `Args` adds `base + n - 1`,
-    // and the base is 1 because that frame holds this call's arguments.
+    // `Args` reads callback arguments from frame index 1.
     state.pushCFunction(&zigDouble);
     state.setGlobal("zig_double");
     state.setTop(0);
     try state.run("return zig_double(21)", "=consumer");
     try expectInteger(w, "zig callback", "zig_double(21)", state.toInteger(1), 42);
 
-    // The same function given the wrong type raises through that check, and
-    // the protected call turns the raise into an error value.
+    // A wrong callback argument returns `RunError` through the protected call.
     state.setTop(0);
-    //
-    // `run` answers `RunError!void` (`zig/root.zig:1149-1152`): the failure is
-    // one of `RunError` and the success is nothing at all, so the two halves
-    // are named here instead of by a `catch` whose arm would have to name a
-    // `void`. A chunk that ran where this one has to raise is a check that did
-    // not match, which is the error the next line already reports for every
-    // other outcome.
     const callback_failure: luajit.RunError = if (state.run("return zig_double('x')", "=consumer")) |_|
         return error.ConsumerCheckFailed
     else |err|
@@ -192,11 +131,7 @@ pub fn main(init: std.process.Init) !void {
         return error.ConsumerCheckFailed;
     }
 
-    // The compiler is switched off and on through the typed entry points, and
-    // the library's own `jit.status` says which state it ended up in. The stack
-    // is cleared between the two: a protected call leaves what it returned
-    // above what was already there, so reading index 1 after the second run
-    // without clearing would be reading the first run's answer.
+    // Clear the stack between runs so each `jit.status` result is read from index 1.
     state.setTop(0);
     if (!luajit.jit.disable(&state)) return error.ConsumerCheckFailed;
     try state.run("local on = jit.status() return on", "=consumer");
@@ -207,19 +142,8 @@ pub fn main(init: std.process.Init) !void {
     if (!state.toBoolean(1)) return error.ConsumerCheckFailed;
     try w.print("{s: <24} off then on, confirmed by jit.status\n", .{ "jit engine" });
 
-    // The FFI, which is what a LuaJIT build offers that a plain Lua 5.1 does
-    // not. The `tonumber` around the call result is not decoration:
-    // `lua_tointegerx` sets its flag only for a slot that already holds a
-    // number or a string that scans as one, and answers 0 otherwise
-    // (`src/lj_api.c:422-445`); a cdata is neither, so the conversion has to
-    // happen in Lua where the cdata's `__tonumber` metamethod runs.
-    //
-    // A C symbol has to be declared before this build will index it:
-    // `lj_clib_index` raises `LJ_ERR_FFI_NODECL` for a name no declaration
-    // made (`src/lj_clib.c:348-350`, `src/lj_errmsg.h:177`), so there is no
-    // implicit declaration to fall back on and the prototype glibc gives for
-    // `abs` is written first. It is also what gives the call below an
-    // argument type to convert to.
+    // Convert FFI cdata with Lua's `tonumber`; `lua_tointegerx` accepts only numbers or numeric strings (`src/lj_api.c:422-445`).
+    // Declare `abs` before `ffi.C` lookup; LuaJIT rejects undeclared symbols (`src/lj_clib.c:348-350`).
     state.setTop(0);
     try state.run("ffi.cdef[[ int abs(int); ]]", "=consumer");
     state.setTop(0);
@@ -231,8 +155,6 @@ pub fn main(init: std.process.Init) !void {
     }
     try expectInteger(w, "ffi", "ffi.C.abs(-7)", state.toInteger(2), 7);
 
-    // Close the state here rather than through the deferred close, so the
-    // accounting below is about this program's own state and nothing else.
     state.deinit();
     if (budget.blocks.count() != 0 or budget.bytes_out != budget.bytes_in) {
         try w.print("state left {d} blocks and {d}/{d} bytes\n", .{
@@ -278,11 +200,7 @@ fn expectInteger(
     }
 }
 
-/// The accounting side of the allocator this program installs.
-///
-/// The point of it is the closing line in `main`: a state that took a block and
-/// did not give it back would leave an entry here, and the program would exit
-/// non-zero instead of claiming a clean close.
+/// Counts Lua allocations so `main` can verify that closing the state freed every block.
 const Budget = struct {
     allocator: std.mem.Allocator,
     blocks: std.AutoHashMapUnmanaged(usize, usize) = .empty,
@@ -294,27 +212,12 @@ const Budget = struct {
     }
 };
 
-/// A block as the allocator that owns it, and the alignment every block this
-/// allocator hands out has to satisfy.
-///
-/// LuaJIT stores its own objects in these blocks and their alignment is not 1:
-/// `TValue` is declared `LJ_ALIGN(8)` (`src/lj_obj.h:174`) and `GCudata`
-/// carries an `align1` field to force the same (`src/lj_obj.h:330`), so the
-/// first object in a block at a lesser address would be misaligned. Zig's
-/// `alloc(u8, n)` promises alignment 1 and nothing more, which is why a block
-/// is asked for with this alignment and given back with the same one.
+/// LuaJIT objects need 8-byte alignment; the allocator returns `align(8)` blocks (`src/lj_obj.h:174`).
 const Block = []align(8) u8;
 const block_alignment: std.mem.Alignment = .@"8";
 
-/// The allocator `lua_newstate` is given.
-///
-/// `src/lj_gc.c:869-881` is the contract this implements: a null `ptr` goes
-/// with `osize == 0`, `nsize == 0` is the only request to release, and a
-/// request for more than nothing must come back with a pointer or the library
-/// raises on the spot. Every block is recorded by the address it was handed out
-/// at and the size *this* allocator gave it, because Zig's `free` and `realloc`
-/// want the size that was allocated rather than the one Lua accounts for, and
-/// because that pair is what the closing check in `main` is about.
+/// Implements `lua_newstate`'s allocator contract: `nsize == 0` frees; allocation failure returns null.
+/// Records addresses and sizes because Zig `free` and `realloc` require the original allocation size.
 fn budgetAlloc(
     user_data: ?*anyopaque,
     pointer: ?*anyopaque,
@@ -335,15 +238,11 @@ fn budgetAlloc(
     }
 
     if (pointer) |address| {
-        // The old entry goes before the resize: the block may move, and an
-        // entry left behind at the old address would be a block this allocator
-        // no longer owns and could never release, so the closing check would
-        // report a leak that is really a bookkeeping mistake here.
+        // Remove the old address before `realloc`; it may move the block.
         const entry = self.blocks.fetchRemove(@intFromPtr(address)) orelse
             return null;
         const grown = self.allocator.realloc(blockAt(address, entry.value), nsize) catch {
-            // The resize failed, so the block is still the one that was handed
-            // out, at its original size, and it has to stay on the books.
+            // On failure, retain the original block and its recorded size.
             self.blocks.putAssumeCapacity(@intFromPtr(address), entry.value);
             return null;
         };
@@ -363,23 +262,13 @@ fn budgetAlloc(
     return @ptrCast(fresh.ptr);
 }
 
-/// The recorded block at `address`, at the length it was handed out with, so
-/// that `free` and `realloc` see the same alignment the allocation had.
-///
-/// The `@alignCast` is not a way to make a lesser address pass: an address
-/// only reaches this from a `fetchRemove` on `blocks`, and every entry in
-/// `blocks` was written by this allocator's own fresh-allocation arm, which
-/// asks for `block_alignment`, or by the resize arm, which reallocs such a
-/// block and therefore keeps its alignment. Anything else -- an address the
-/// library never got from here -- misses the map and is answered with null
-/// before this is reached. The cast states that invariant; in a checked build
-/// it is still checked at run time.
+/// Reconstructs the recorded aligned block; only addresses removed from `Budget.blocks` reach here.
+/// Fresh and resized blocks preserve `block_alignment`, so the cast is valid.
 fn blockAt(address: *anyopaque, length: usize) Block {
     return @as([*]align(8) u8, @ptrCast(@alignCast(address)))[0..length];
 }
 
-/// The C function `zig_double` is bound to: it reads one argument through
-/// `Args` and leaves its double on the stack.
+/// C callback doubles its first integer argument and returns one Lua result.
 fn zigDouble(l: ?*luajit.c.lua_State) callconv(.c) c_int {
     var state = luajit.State{ .raw = l };
     const args = luajit.Args{ .state = &state, .base = 1 };
@@ -387,12 +276,8 @@ fn zigDouble(l: ?*luajit.c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
-/// The provider this run should load, from `--provider <path>` or from
-/// `LUAJIT_TEST_PROVIDER`.
-///
-/// Both are explicit. Nothing here looks in a default location, and a build
-/// that was not told which file to load says so rather than loading something
-/// else.
+/// Resolves `--provider <path>` or `LUAJIT_TEST_PROVIDER`; no default is used.
+/// Returns the explicit path or `NoProviderConfigured`.
 fn providerRequest(init: std.process.Init) ConfigurationError![]const u8 {
     const args = init.minimal.args.toSlice(init.arena.allocator()) catch
         return noProvider();
@@ -407,8 +292,6 @@ fn providerRequest(init: std.process.Init) ConfigurationError![]const u8 {
         return noProvider();
 }
 
-/// Say which variable is missing. An error name on its own would send the next
-/// person into the loader instead of to the command line.
 fn noProvider() ConfigurationError {
     std.debug.print(
         "consumer: this is a runtime-loading build. Pass --provider <path>, or " ++

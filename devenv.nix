@@ -1,62 +1,19 @@
-# The canonical development shell for this SDK.
-#
-# Enter it with `devenv shell`, or let direnv do it through `.envrc`.
-#
-# Four rules shape this file and none of them is negotiable:
-#
-#   * The SDK package is NOT in `packages`. Listing it would mean building the
-#     whole native library merely to enter the shell. `packages` holds tools
-#     only. The library is built on demand - `zig build` from the source tree,
-#     or `devenv build outputs.static` for the packaging route.
-#   * `outputs.static`, `outputs.shared` and `outputs.default` are **lazy**:
-#     they are the same `pkgs.callPackage ./package.nix` derivation `flake.nix`
-#     builds, and nothing in this file forces them to be realised. `devenv build
-#     outputs.static` is the real packaging command; it is a build, not a shell
-#     entry.
-#   * No host path, user name, store path or node path appears anywhere in this
-#     file, and nothing is read from the environment at evaluation time. No
-#     `builtins.getEnv`, no `builtins.currentSystem`.
-#   * Scratch and cache are the caller's business, and nothing in this file
-#     writes into this checkout. A directory the caller already exported always
-#     wins and is never overwritten; a task that generates output fills a
-#     missing `ZIG_LOCAL_CACHE_DIR` from `XDG_CACHE_HOME`, then from `TMPDIR`,
-#     and refuses to run when neither is set rather than choosing a location of
-#     its own. `TMPDIR`, `DEVENV_HOME`, `XDG_RUNTIME_DIR` and the rest are
-#     never unset. A receipt meant to be recorded belongs in an approved-scratch
-#     run that supplied them.
-#
-# Nothing here was evaluated, built or run to produce this file.
+# LuaJIT development shell and build tasks.
+# Build outputs and Zig caches stay outside this checkout.
 
 { pkgs, lib, ... }:
 
 let
-  # `pkgs.zig_0_16` is the attribute name nixpkgs derives from `0.16.0`.
-  # Asserting the exact version is what stops a future nixpkgs bump from
-  # silently moving this SDK onto another compiler.
+  # Pin the toolchain used by this package.
   zig = pkgs.zig_0_16;
 
-  # One derivation, two variants. `package.nix` is the whole build; these
-  # attribute values are only forced when someone asks for the output.
   luajit = linkage: pkgs.callPackage ./package.nix { inherit zig linkage; };
 
-  # This module's own directory, shell-quoted once for every task body below.
-  #
-  # `./.` in an expression is relative to the file that contains it, so this is
-  # the SDK root however devenv was invoked, and a task body that has to be
-  # here says so itself instead of trusting the caller's directory or
-  # `$DEVENV_ROOT` - which is the devenv *project*, holding `.devenv/` and
-  # `devenv.lock` and neither `build.zig` nor `UPSTREAM.sha256`. It is
-  # `builtins.toString` and not `"${./.}"` deliberately: interpolating a path
-  # copies it into the read-only Nix store, which here would be a frozen second
-  # copy of the whole SDK rather than the working tree `build.zig` and
-  # `UPSTREAM.sha256` describe. No host path is written in this file - the value
-  # is read out of the module's own location, so it tracks this checkout.
+  # Resolve this checkout without copying it into the Nix store; tasks cd here
+  # rather than relying on `DEVENV_ROOT` or the caller's working directory.
   sdk_root = lib.escapeShellArg (builtins.toString ./.);
 
-  # Where a task's build output goes. `zig build` keeps its local cache in
-  # `.zig-cache/` and installs into `zig-out/`, both relative to the working
-  # directory, and this checkout is a working tree that has to stay
-  # byte-identical.
+  # Keep Zig caches and build outputs outside the checkout.
   zig_caches = ''
     if [ -z "''${ZIG_LOCAL_CACHE_DIR:-}" ]; then
       if [ -n "''${XDG_CACHE_HOME:-}" ]; then
@@ -80,10 +37,7 @@ let
     fi
   '';
 
-  # The same rule with the one extra requirement a task that generates output
-  # has: it must be able to name that directory. An environment with nowhere
-  # outside the checkout to write stops here, with the reason, instead of
-  # filling the tree.
+  # Refuse output-producing tasks when no external cache directory is available.
   require_external_output = ''
     if [ -z "''${ZIG_LOCAL_CACHE_DIR:-}" ]; then
       echo "luajit devenv: ZIG_LOCAL_CACHE_DIR, XDG_CACHE_HOME and TMPDIR are all unset," >&2
@@ -93,35 +47,24 @@ let
     fi
   '';
 
-  # What a task that only reads this tree starts with. devenv materialises a
-  # task as a generated shell program that inherits the caller's working
-  # directory. The `exit 1` is not decoration: a `cd` that failed and was not
-  # checked would run the rest of the body wherever the caller stood.
+  # Task bodies must enter the checkout and stop if that fails.
   in_sdk = ''
     cd ${sdk_root} || exit 1
   '';
 
-  # What a task that builds adds to that: the two cache directories, filled by
-  # the rule above, and the refusal when there is nowhere external to write.
+  # Build tasks use the external caches and prefix.
   in_sdk_build = ''
     ${zig_caches}
     ${require_external_output}
     ${in_sdk}
   '';
 
-  # The flags every `zig build` here shares: this workspace's eight jobs,
-  # fixed, then the printed step list and a cache outside the checkout. No
-  # caller flags are forwarded and none were before - `devenv tasks run` takes
-  # no argument of its own, so a task body has nothing to forward.
+  # Use a fixed job width and external cache for build tasks.
   build_flags = ''
     -j8 --summary all --cache-dir "$ZIG_LOCAL_CACHE_DIR/native"
   '';
 
-  # The one prefix this SDK's `zig build install` writes to. Both that step and
-  # the default step install, so without `--prefix` the delivery tree would be
-  # created inside the checkout. The steps that install nothing - `test`,
-  # `smoke`, `check`, `consumer`, which `build.zig:393,402,409,417` wires to no
-  # install step - get no prefix they could not use.
+  # Install outputs outside the source checkout.
   install_prefix = "$ZIG_LOCAL_CACHE_DIR/prefix";
 in
 {
@@ -134,16 +77,12 @@ in
   outputs = {
     static = luajit "static";
     shared = luajit "dynamic";
-    # This SDK's linkage policy is static, so `default` follows it.
+    # The default output follows this SDK's static linkage policy.
     default = luajit "static";
   };
 
   tasks = {
-    # Every body below changes into this SDK's own directory first and then keeps
-    # what it generates outside the checkout: `build_flags` fixes the job count
-    # at this workspace's eight and names a cache in the caller's local cache
-    # directory, and the two entries that install also name an external prefix.
-    # Task names, steps and order are exactly what they were.
+    # Tasks run from the SDK root and keep generated output outside it.
     "sdk:build" = {
       description = "zig build install - compile the library and install it under $ZIG_LOCAL_CACHE_DIR/prefix";
       exec = ''
@@ -216,11 +155,7 @@ in
     };
   };
 
-  # The shell hook fills the same two cache directories the tasks use, by the
-  # same rule, so an ordinary `devenv shell` session leaves this checkout alone
-  # as well. A value the caller exported is kept exactly as it is, and with
-  # nothing to choose from the hook chooses nothing: only a task, which has to
-  # name the directory, refuses.
+  # The shell applies the same external-cache rule as build tasks.
   enterShell = ''
     ${zig_caches}
     echo "luajit 2.1.1788856981 (pinned c6ffc141a8762b41703f9287d63d93622a13dd8f), Lua 5.1 ABI, GC64 on 64-bit targets"

@@ -1,36 +1,14 @@
 # yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
 #
 # SPDX-License-Identifier: MIT
-# See FORK-LICENSE.md for the full grant and the owner authorization behind it.
-#
-# The development shell's one input, pinned by revision rather than followed by
-# a branch. This is the same revision every other SDK in this workspace names,
-# so one devenv lock generation covers all of them. `devenv.lock` is generated
-# and owned by the driver; this file states which revision it wants so that the
-# lock records that revision instead of whatever a branch pointed at on the day
-# it was written.
 
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/c2f38fe7f9e04d9aadd354d380f2bd40531d9737
 
-# `clean` under this key is devenv's environment-sanitising option, and it
-# takes `enabled` and `keep`, not a sequence of paths. It is written in that
-# shape, stating in full what the default already is: nothing is sanitised on
-# shell entry and no variable is dropped from the environment the caller
-# brought in.
-#
-# `devenv clean` itself removes devenv's own generated state - `.devenv`,
-# `.devenv.flake.nix`, `.direnv`, `devenv.local.nix`. `.zig-cache/` and
-# `zig-out/` are excluded on purpose: they are build outputs, and having one
-# tool also delete them would make an ordinary `devenv clean` a way to destroy
-# a half-finished build for no reason.
 clean:
   enabled: false
   keep: []
 
-# Nothing here is unfree and nothing here is unsupported: the shell holds the
-# Zig 0.16.0 toolchain, pkg-config and git, and it builds LuaJIT from the
-# source already in this directory.
 allowUnfree: false
 allowUnsupportedSystem: false
