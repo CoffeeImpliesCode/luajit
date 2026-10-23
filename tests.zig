@@ -80,6 +80,9 @@ fn reportUnexpected(
     got: luajit.RunError,
     expected: ?luajit.RunError,
 ) void {
+    if (expected) |want| {
+        if (got == want) return;
+    }
     const wanted = if (expected) |want| @errorName(want) else "the chunk to succeed";
     std.debug.print(
         "\ntests.zig: wanted {s}, the chunk reported {t}\n  message: {s}\n",

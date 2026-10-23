@@ -4,7 +4,7 @@
 {
   lib,
   stdenv,
-  # Pin the package to Zig 0.16.0, not nixpkgs' moving `zig` alias.
+  # Pin the package to Zig 0.17.0, not nixpkgs' moving `zig` alias.
   zig,
   # Used to verify the installed pkg-config metadata.
   pkg-config,
@@ -12,8 +12,8 @@
   optimize ? "ReleaseFast",
 }:
 
-assert lib.assertMsg (zig.version == "0.16.0")
-  "LuaJIT builds with Zig 0.16.0; this derivation was given zig ${zig.version}";
+assert lib.assertMsg (zig.version == "0.17.0")
+  "LuaJIT builds with Zig 0.17.0; this derivation was given zig ${zig.version}";
 assert lib.assertMsg (linkage == "static" || linkage == "dynamic")
   "linkage must be \"static\" or \"dynamic\", not ${lib.strings.toString linkage}";
 # Nix cross builds are unsupported; target selection belongs to build.zig.
@@ -123,11 +123,11 @@ stdenv.mkDerivation (finalAttrs: {
 
   meta = {
     description =
-      "Just-In-Time compiler for Lua 5.1, production rolling release 2.1.1788856981, built from this repository's own source by Zig 0.16";
+      "Just-In-Time compiler for Lua 5.1, production rolling release 2.1.1788856981, built from this repository's own source by Zig 0.17";
     longDescription = ''
       LuaJIT 2.1.1788856981, pinned at commit
       c6ffc141a8762b41703f9287d63d93622a13dd8f and compiled from this
-      repository's own src/ by Zig 0.16.0. The release version is not typed
+      repository's own src/ by Zig 0.17.0. The release version is not typed
       anywhere in this package: it is the commit timestamp in the committed
       .relver, substituted into src/luajit.h exactly as upstream does.
 

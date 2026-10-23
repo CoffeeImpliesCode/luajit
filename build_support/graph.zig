@@ -117,14 +117,18 @@ const relver_file = ".relver";
 /// plain string at that point, not as a step's output, so it cannot be
 /// produced by a step and threaded through.
 pub fn releaseVersion(b: *std.Build) []const u8 {
-    // Read through `b.build_root`, which is "the directory containing build.zig"
-    // (`std/Build.zig:56-57`) -- this package's root whether this build is the
-    // top-level one or a dependency child of the consumer package -- and so the
-    // same handle `addPkgConfig` reads `etc/luajit.pc` through.
-    //
+    // `b.root` is this package's Cache.Path, including when used by a consumer
+    // dependency, so it resolves the same tracked stamp in either context.
+    // `addPkgConfig` reads its template through the same root directory.
+    b.dependOnFileContents(b.path(relver_file));
     // Owned by `b.allocator`, which outlives the graph this value is read for,
     // so the trimmed slice below is returned without a second copy.
-    const raw = b.build_root.handle.readFileAlloc(
+    var root_dir = b.root.openDir(b.graph.io, ".", .{}) catch |err| std.debug.panic(
+        "luajit: cannot open the build root: {s}",
+        .{@errorName(err)},
+    );
+    defer root_dir.close(b.graph.io);
+    const raw = root_dir.readFileAlloc(
         b.graph.io,
         relver_file,
         b.allocator,
@@ -187,7 +191,7 @@ const host_cflags: []const []const u8 = &.{ "-O2", "-fno-strict-float-cast-overf
 /// Options every graph this file builds shares.
 pub const Options = struct {
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     /// Whether this is the published package module set or a private one. A
     /// cross-target check needs the private form: modules are registered by
     /// name against the whole build, so registering `luajit` once per check
@@ -197,7 +201,7 @@ pub const Options = struct {
     /// check graph adds the target triple, because six steps all called
     /// `luajit-5.1` make `--summary all` unreadable.
     name_prefix: []const u8,
-    linkage: std.builtin.LinkMode,
+    linkage: std.lang.LinkMode,
     /// `$(RELVER)` (`Makefile:22`), read once by `releaseVersion` from the
     /// tracked `.relver` and carried here so the generated header, the
     /// `relver=` line of `luajit.pc` and a shared library's version are three
@@ -409,7 +413,7 @@ pub fn addGraph(b: *std.Build, o: Options) !Graph {
 /// `-Dlinkage` on every platform instead of forcing dynamic on Windows as
 /// `src/Makefile:569-574` does, so the macro follows the linkage the caller
 /// chose. It is a declaration change, so it goes on the translation line too.
-fn needsDllMacro(target: abi.Selection, linkage: std.builtin.LinkMode) bool {
+fn needsDllMacro(target: abi.Selection, linkage: std.lang.LinkMode) bool {
     return target.os == .windows and linkage == .dynamic;
 }
 
@@ -446,7 +450,7 @@ fn applyTargetArchMacros(m: *std.Build.Module, target: abi.Selection, b: *std.Bu
 fn addMinilua(b: *std.Build) *std.Build.Step.Compile {
     const mod = b.createModule(.{
         .target = b.graph.host,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .link_libc = true,
     });
     mod.addIncludePath(b.path("src"));
@@ -489,20 +493,16 @@ fn addVersionHeader(
 
     const run = b.addRunArtifact(minilua);
     run.setName("genversion");
-    // `addFileArg`, not `addArg`: `addArg` takes a `[]const u8` and a
-    // `std.Build.LazyPath` is not one, while `addFileArg`
-    // (`std/Build/Step/Run.zig:330`) takes the path **and** records the script as
-    // a file input of the run. That second half is what we want anyway: a change
-    // to `genversion.lua` has to re-run the step.
-    run.addFileArg(b.path(b.pathJoin(&.{ "src", "host", "genversion.lua" })));
+    // addFileArg2 records each source as a file input so changes re-run the step.
+    run.addFileArg2(b.path(b.pathJoin(&.{ "src", "host", "genversion.lua" })), .{});
     // `src/host/genversion.lua:32`: `file_read(FILE_ROLLING_H)`.
-    run.addFileArg(b.path(b.pathJoin(&.{ "src", "luajit_rolling.h" })));
+    run.addFileArg2(b.path(b.pathJoin(&.{ "src", "luajit_rolling.h" })), .{});
     // `src/host/genversion.lua:33`: `file_read(FILE_RELVER_TXT)`.
-    run.addFileArg(relver);
+    run.addFileArg2(relver, .{});
     // `src/host/genversion.lua:44`: `file_write_mod(FILE_LUAJIT_H, text)`. The
     // script writes only when the bytes differ (`src/host/genversion.lua:20-26`),
     // which is why a cached run is still correct output.
-    return run.addOutputFileArg(sources.version_generated_header);
+    return run.addOutputFileArg2(sources.version_generated_header, .{});
 }
 
 /// `host/buildvm_arch.h`, from `minilua dynasm/dynasm.lua vm_<arch>.dasc`.
@@ -522,11 +522,8 @@ fn addBuildvmArch(
 ) std.Build.LazyPath {
     const run = b.addRunArtifact(minilua);
     run.setName(b.fmt("dynasm {s}", .{target.dasc_source}));
-    // `addFileArg`, not `addArg`: `addArg` takes a `[]const u8`, which a
-    // `std.Build.LazyPath` is not, and recording the script as a file input is
-    // wanted regardless -- a change to `dynasm.lua` or to any backend beside it
-    // has to re-run DynASM.
-    run.addFileArg(b.path(b.pathJoin(&.{ "dynasm", "dynasm.lua" })));
+    // addFileArg2 records each source as a file input so changes re-run DynASM.
+    run.addFileArg2(b.path(b.pathJoin(&.{ "dynasm", "dynasm.lua" })), .{});
     for (abi.dynasmDefines(target, b.allocator)) |d| {
         // Two argv elements, `-D` and `NAME` or `NAME=VALUE`, because
         // `dynasm/dynasm.lua:196-205` reads the define as `optparam(args)`, the
@@ -536,9 +533,9 @@ fn addBuildvmArch(
         run.addArg(d);
     }
     run.addArg("-o");
-    const out = run.addOutputFileArg(std.fs.path.basename(sources.dynasm_generated_header));
+    const out = run.addOutputFileArg2(std.fs.path.basename(sources.dynasm_generated_header), .{});
     // `src/Makefile:489`, `DASM_DASC= vm_$(DASM_ARCH).dasc`.
-    run.addFileArg(b.path(b.pathJoin(&.{ "src", target.dasc_source })));
+    run.addFileArg2(b.path(b.pathJoin(&.{ "src", target.dasc_source })), .{});
     // `src/Makefile:675`'s remaining prerequisites.
     run.addFileInput(b.path(b.pathJoin(&.{ "src", "lj_arch.h" })));
     run.addFileInput(b.path(b.pathJoin(&.{ "src", "lua.h" })));
@@ -651,7 +648,7 @@ fn addBuildvm(
         // target, so its pointer width is the one `generatorHostTarget` chooses
         // and not the build machine's by default.
         .target = generator,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .link_libc = true,
     });
     // `src/Makefile:200`: `HOST_XCFLAGS= -I.`, which in upstream's own build is
@@ -719,37 +716,9 @@ fn addBuildvm(
     });
 }
 
-/// Runs a narrowed Linux host generator under qemu-user only with `-fqemu`.
-/// A kernel need not support its host family's 32-bit execution mode.
-/// Static linking removes the generator's libc/sysroot dependency.
-/// Other hosts and non-emulated builds retain the native artifact run.
+/// Lets Zig's run step select an enabled external executor for host generators.
 fn addRunGenerator(b: *std.Build, buildvm: *std.Build.Step.Compile) *std.Build.Step.Run {
-    const generator = buildvm.rootModuleTarget();
-    if (b.enable_qemu and generator.os.tag == .linux and generator.ptrBitWidth() != b.graph.host.result.ptrBitWidth()) {
-        if (generatorEmulator(generator.cpu.arch)) |qemu| {
-            const run = b.addSystemCommand(&.{qemu});
-            run.addArtifactArg(buildvm);
-            return run;
-        }
-    }
     return b.addRunArtifact(buildvm);
-}
-
-/// The qemu-user binary for a narrowed generator's CPU architecture, spelled
-/// the way `getExternalExecutor` spells it, or null where that function names
-/// none: `powerpcle` and `riscv32be` are the two architectures
-/// `generatorHostTarget` can produce that its switches do not cover.
-fn generatorEmulator(arch: std.Target.Cpu.Arch) ?[]const u8 {
-    return switch (arch) {
-        .x86 => "qemu-i386",
-        .arm => "qemu-arm",
-        .armeb => "qemu-armeb",
-        .mips => "qemu-mips",
-        .mipsel => "qemu-mipsel",
-        .powerpc => "qemu-ppc",
-        .riscv32 => "qemu-riscv32",
-        else => null,
-    };
 }
 
 /// The VM output, from `buildvm -m <mode> -o <out>`.
@@ -769,10 +738,10 @@ fn addVmOutput(
     run.addArg("-m");
     run.addArg(abi.vmMode(target));
     run.addArg("-o");
-    return run.addOutputFileArg(switch (target.vm_output) {
+    return run.addOutputFileArg2(switch (target.vm_output) {
         .pe_obj => "lj_vm.obj",
         else => "lj_vm.S",
-    });
+    }, .{});
 }
 
 /// The six files `buildvm` writes by scanning the library sources.
@@ -811,15 +780,15 @@ fn addBuildvmOutputs(
         run.addArg("-m");
         run.addArg(scan.mode);
         run.addArg("-o");
-        const out = run.addOutputFileArg(scan.output);
+        const out = run.addOutputFileArg2(scan.output, .{});
         if (scan.fold) {
             // `src/Makefile:711`: `buildvm -m folddef -o $@ lj_opt_fold.c`.
-            run.addFileArg(b.path(b.pathJoin(&.{ "src", "lj_opt_fold.c" })));
+            run.addFileArg2(b.path(b.pathJoin(&.{ "src", "lj_opt_fold.c" })), .{});
         } else {
             // `src/Makefile:689-707`: the same `$(LJLIB_C)` list every mode
             // scans. `src/host/buildvm_lib.c:362-368` opens each by `fopen`, so
             // the paths must be the ones this build knows.
-            for (sources.ljl_sources) |s| run.addFileArg(b.path(b.pathJoin(&.{ "src", s })));
+            for (sources.ljl_sources) |s| run.addFileArg2(b.path(b.pathJoin(&.{ "src", s })), .{});
         }
         if (std.mem.eql(u8, scan.mode, "vmdef")) {
             vmdef = out;
@@ -1228,8 +1197,8 @@ fn preprocessedAggregate(
         run.addArg(triple);
     }
     // `src/`, for the headers themselves, then each generated directory.
-    run.addPrefixedDirectoryArg("-I", b.path("src"));
-    for (generated_dirs) |d| run.addPrefixedDirectoryArg("-I", d);
+    run.addDirectoryArg2(b.path("src"), .{ .prefix = "-I" });
+    for (generated_dirs) |d| run.addDirectoryArg2(d, .{ .prefix = "-I" });
     for (abi.targetArchMacros(target, b.allocator)) |entry| {
         if (std.mem.indexOfScalar(u8, entry, '=')) |i| {
             run.addArg(b.fmt("-D{s}={s}", .{ entry[0..i], entry[i + 1 ..] }));
@@ -1268,12 +1237,12 @@ fn preprocessedAggregate(
     );
     // `-include` is processed before the translation unit's own first include,
     // so the typedefs are in scope for every system header that follows.
-    run.addPrefixedFileArg("-include", shim);
+    run.addFileArg2(shim, .{ .prefix = "-include" });
     run.addArg("-o");
     // The generated file is this step's output, so the step is cached: a second
     // build with the same inputs neither re-runs the preprocessor nor rewrites
     // the file.
-    const preprocessed = run.addOutputFileArg("luajit_translate.h");
-    run.addFileArg(b.path("build_support/translate.h"));
+    const preprocessed = run.addOutputFileArg2("luajit_translate.h", .{});
+    run.addFileArg2(b.path("build_support/translate.h"), .{});
     return preprocessed;
 }

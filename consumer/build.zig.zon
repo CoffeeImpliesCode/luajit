@@ -4,7 +4,7 @@
     // version identifies the proof, not a release.
     .version = "0.1.0",
     .fingerprint = 0xc37d5eccf5b7baf0,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         // A relative path, not a registry or archive URL. The consumer is the
         // proof that `dep.module("luajit")` works from outside the package that

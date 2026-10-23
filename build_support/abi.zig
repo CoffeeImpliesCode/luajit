@@ -128,8 +128,8 @@ pub fn select(t: std.Target) Unsupported!Selection {
         // `Abi.androideabi`), which is also what `lj_arch.h:79-80` keys on
         // through `__linux__`. A `.android` case here does not exist.
         .linux => .linux,
-        // Mac Catalyst is its own `Os.Tag` in Zig 0.16 (`std/Target.zig:42`)
-        // and its own object format case there (`:1049`, `.macho`), but it is
+        // Mac Catalyst is its own `Os.Tag` in Zig 0.17 (`std/Target.zig:42`)
+        // and its own object format case (`:1057`, `.macho`), but it is
         // Darwin and iOS at the same time and upstream says so: Darwin takes
         // `-DLUAJIT_OS=LUAJIT_OS_OSX` (`src/Makefile:370-372`), iOS takes the
         // same value with `-DLUAJIT_TARGET_IPHONE=1` (`:373-376`), and
@@ -539,5 +539,5 @@ pub fn osMacro(s: Selection, allocator: std.mem.Allocator) []const u8 {
 }
 
 fn b(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) []u8 {
-    return std.fmt.allocPrint(allocator, fmt, args) catch @panic("OOM");
+    return allocator.print(fmt, args) catch @panic("OOM");
 }

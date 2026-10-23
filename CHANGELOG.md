@@ -1,5 +1,11 @@
 # CHANGELOG
 
+- Port to Zig 0.17.0.
+- Nested consumer builds preserve cache and toolchain environment paths and forward `-Dlua-root` under its declared name.
+- `-Dlua-root` no longer infers an embedded root from `--prefix`; set it explicitly when needed.
+- GNU-libc QEMU consumer targets now install instead of run because the nested build cannot receive the parent's `--libc-runtimes` path.
+- Consumer builds install the package first so the nested build can use the parent prefix as a late-bound directory argument.
+- Narrowed Linux generators follow Zig's automatic executor selection; `-fqemu` no longer forces QEMU for CPU-compatible 32-bit targets.
 - Build 32-bit Linux host generators as static executables so 64-bit hosts can run them for 32-bit targets.
 - `zig build consumer` forwards target, CPU, linkage, runtime, cache, Lua root, and prefix settings; it builds and installs when the host cannot execute the target.
 - Corrected MIPS endianness and MIPS64R6 selection in generated VM code.

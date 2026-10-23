@@ -5,7 +5,7 @@
 
 let
   # Pin the toolchain used by this package.
-  zig = pkgs.zig_0_16;
+  zig = pkgs.zig_0_17;
 
   luajit = linkage: pkgs.callPackage ./package.nix { inherit zig linkage; };
 
@@ -168,9 +168,9 @@ in
   assertions = [
     {
       assertion =
-        lib.assertMsg (zig.version == "0.16.0")
-          "this SDK builds with Zig 0.16.0; devenv resolved ${zig.version}";
-      message = "luajit needs Zig 0.16.0.";
+        lib.assertMsg (zig.version == "0.17.0")
+          "this SDK builds with Zig 0.17.0; devenv resolved ${zig.version}";
+      message = "luajit needs Zig 0.17.0.";
     }
   ];
 }

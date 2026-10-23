@@ -5,7 +5,7 @@
     // The rolling version is generated from the packaged `.relver` stamp.
     .version = "2.1.1788856981",
     .fingerprint = 0xda4bba66d6f9ca25,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     // Native sources and generators are vendored; no package dependencies.
     .dependencies = .{},
 

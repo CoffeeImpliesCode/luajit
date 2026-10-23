@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Zig 0.16 build graph for LuaJIT 2.1 rolling sources.
+//! Zig 0.17.0 build graph for LuaJIT 2.1 rolling sources.
 //! `graph.releaseVersion` reads the checked-in `.relver` stamp.
 //! Do not add system-library mode: headers, VM tables, and ABI version must match.
 
@@ -24,29 +24,13 @@ fn target_was_named(b: *const std.Build) bool {
     return b.user_input_options.contains("target");
 }
 
-/// Returns an explicit absolute install root, excluding build-cache paths.
-fn install_root(b: *const std.Build) ?[]const u8 {
-    const prefix = b.install_prefix;
-    if (!std.fs.path.isAbsolute(prefix)) return null;
-    var cache = b.cache_root.path orelse return prefix;
-    while (cache.len > 1 and std.fs.path.isSep(cache[cache.len - 1])) {
-        cache = cache[0 .. cache.len - 1];
-    }
-    if (prefix.len > cache.len and std.mem.startsWith(u8, prefix, cache) and
-        std.fs.path.isSep(prefix[cache.len]))
-    {
-        return null;
-    }
-    return prefix;
-}
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     // Static is the default; upstream's mixed mode is not one artifact.
     const linkage = b.option(
-        std.builtin.LinkMode,
+        std.lang.LinkMode,
         "linkage",
         "Build libluajit-5.1 as a static archive (the default) or a shared library. " ++
             "This selects the kind of artifact `zig build install` writes and, on " ++
@@ -63,16 +47,15 @@ pub fn build(b: *std.Build) void {
             "driver-owned runtime/{loader.zig,sync.c,sync.h,generate.zig}.",
     ) orelse false;
 
-    // Embed only an absolute root; relative runtime paths depend on the cwd.
+    // Embed only an explicit absolute root; relative runtime paths depend on the cwd.
     const lua_root_option = b.option(
         []const u8,
         "lua-root",
         "Absolute install root compiled into the binary as LUA_ROOT and LUA_LJDIR " ++
-            "(src/Makefile:290-304). Defaults to --prefix when that is an absolute " ++
-            "path outside the build cache; left undefined otherwise, which is " ++
-            "upstream's documented distribution layout (doc/install.html#distro). " ++
-            "It is deliberately not written into luajit.pc: that file names its " ++
-            "own location instead, so it still resolves after the tree is copied. " ++
+            "(src/Makefile:290-304). When omitted, upstream's documented " ++
+            "distribution layout applies (doc/install.html#distro). It is " ++
+            "deliberately not written into luajit.pc: that file names its own " ++
+            "location instead, so it still resolves after the tree is copied. " ++
             "See addPkgConfig.",
     );
     if (lua_root_option) |root| {
@@ -84,7 +67,7 @@ pub fn build(b: *std.Build) void {
             );
         }
     }
-    const lua_root = lua_root_option orelse install_root(b);
+    const lua_root = lua_root_option;
 
     // Reject architectures outside LuaJIT's supported set.
     const selection = abi.select(target.result) catch |err| switch (err) {
@@ -120,7 +103,7 @@ pub fn build(b: *std.Build) void {
     // Run the cache-built CLI after installing its Lua module tree.
     const run_selfcheck = b.addRunArtifact(native.run_cli.?);
     run_selfcheck.setName("luajit native self-check");
-    run_selfcheck.addFileArg(b.path("build_support/native_selfcheck.lua"));
+    run_selfcheck.addFileArg2(b.path("build_support/native_selfcheck.lua"), .{});
     // Force execution; a cached run result would not prove the CLI ran.
     run_selfcheck.has_side_effects = true;
 
@@ -176,7 +159,7 @@ pub fn build(b: *std.Build) void {
 fn facadeProgram(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     facade: *std.Build.Module,
     source: []const u8,
 ) *std.Build.Module {
@@ -196,8 +179,8 @@ fn addTargetCheck(
     b: *std.Build,
     step: *std.Build.Step,
     query: std.Target.Query,
-    optimize: std.builtin.OptimizeMode,
-    linkage: std.builtin.LinkMode,
+    optimize: std.lang.Optimize,
+    linkage: std.lang.LinkMode,
     lua_root: ?[]const u8,
     runtime_loaded: bool,
     release_version: []const u8,
@@ -241,13 +224,13 @@ fn addTargetCheck(
 
 /// Runs the consumer separately to avoid a manifest dependency cycle.
 ///
-/// Forwards the target query, CPU selection, executor, cache, prefix, and runtime
-/// options so the consumer tests the same configuration as this graph.
+/// Forwards the target query, CPU selection, requested executors, cache paths,
+/// prefix, and runtime options so the child checks this configuration.
 fn runConsumer(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    linkage: std.builtin.LinkMode,
+    optimize: std.lang.Optimize,
+    linkage: std.lang.LinkMode,
     runtime_loaded: bool,
     lua_root: ?[]const u8,
 ) *std.Build.Step.Run {
@@ -258,8 +241,9 @@ fn runConsumer(
     // Use the compiler running this build for the nested build.
     const run = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
     run.setName("consumer package");
-    run.setCwd(b.path("consumer"));
-    run.addArg(if (hostCanExecute(b, target)) "run" else "install");
+    run.addArg("--build-file");
+    run.addFileArg2(b.path("consumer/build.zig"), .{ .make_absolute = true });
+    run.addArg("consumer");
     run.addArg(b.fmt("-Dtarget={s}", .{triple}));
     run.addArg(b.fmt("-Doptimize={s}", .{@tagName(optimize)}));
     run.addArg(b.fmt("-Dlinkage={s}", .{@tagName(linkage)}));
@@ -272,65 +256,44 @@ fn runConsumer(
             target.query.serializeCpuAlloc(b.allocator) catch @panic("OOM"),
         }));
     }
-    if (b.enable_darling) run.addArg("-fdarling");
-    if (b.enable_qemu) run.addArg("-fqemu");
-    if (b.enable_rosetta) run.addArg("-frosetta");
-    if (b.enable_wasmtime) run.addArg("-fwasmtime");
-    if (b.enable_wine) run.addArg("-fwine");
-    if (b.libc_runtimes_dir) |runtimes| run.addArgs(&.{ "--libc-runtimes", runtimes });
+    run.addThirdPartyEnabledArgDarling(.{ .enabled = "-fdarling" });
+    run.addThirdPartyEnabledArgDarling(.{ .enabled = "-Dconsumer-run-darling=true" });
+    run.addThirdPartyEnabledArgQemu(.{ .enabled = "-fqemu" });
+    run.addThirdPartyEnabledArgQemu(.{ .enabled = "-Dconsumer-run-qemu=true" });
+    run.addThirdPartyEnabledArgRosetta(.{ .enabled = "-frosetta" });
+    run.addThirdPartyEnabledArgRosetta(.{ .enabled = "-Dconsumer-run-rosetta=true" });
+    run.addThirdPartyEnabledArgWasmtime(.{ .enabled = "-fwasmtime" });
+    run.addThirdPartyEnabledArgWasmtime(.{ .enabled = "-Dconsumer-run-wasmtime=true" });
+    run.addThirdPartyEnabledArgWine(.{ .enabled = "-fwine" });
+    run.addThirdPartyEnabledArgWine(.{ .enabled = "-Dconsumer-run-wine=true" });
     // The nested build cannot inherit this build's job width.
     run.addArg("-j8");
     run.addArgs(&.{ "--summary", "all" });
-    // Give the nested graph its own local cache directory.
-    if (b.cache_root.path) |cache| {
-        run.addArg("--cache-dir");
-        run.addArg(b.fmt("{s}/consumer", .{cache}));
+    // Keep the nested graph's local cache separate from the parent.
+    run.addArg("--cache-dir");
+    run.addDirectoryArg2(
+        std.Build.LazyPath.cache_root,
+        .{
+            .make_absolute = true,
+            .suffix = b.fmt("{c}consumer", .{std.fs.path.sep}),
+        },
+    );
+    // Keep relative environment paths anchored to the parent's working directory.
+    inline for (.{ "ZIG_GLOBAL_CACHE_DIR", "ZIG_LIB_DIR" }) |name| {
+        if (b.graph.environ_map.get(name)) |value| run.setEnvironmentVariable(name, value);
     }
-    // Share the global content cache without a nested suffix.
-    if (b.graph.global_cache_root.path) |global| {
-        run.addArg("--global-cache-dir");
-        run.addArg(global);
-    }
-    // Forward an explicit prefix as absolute; otherwise keep the consumer default.
-    const default_prefix = b.build_root.join(b.allocator, &.{"zig-out"}) catch @panic("OOM");
-    if (!std.mem.eql(u8, b.install_prefix, default_prefix)) {
-        const prefix = if (std.fs.path.isAbsolute(b.install_prefix))
-            b.install_prefix
-        else
-            b.pathJoin(&.{ b.graph.cache.cwd, b.install_prefix });
-        run.addArg("--prefix");
-        run.addArg(prefix);
-    }
+    // Create the parent prefix before passing it as a directory input.
+    run.step.dependOn(b.getInstallStep());
+    run.addArg("--prefix");
+    run.addDirectoryArg2(
+        .{ .relative = .{ .base = .install_prefix } },
+        .{ .make_absolute = true },
+    );
     // Pass remaining caller arguments, including a runtime provider.
-    if (b.args) |args| {
-        run.addArg("--");
-        run.addArgs(args);
-    }
+    run.addArg("--");
+    run.addPassthruArgs();
     run.has_side_effects = true;
     return run;
-}
-
-/// Whether enabled executors can run this target with the configured libc.
-/// GNU libc targets need a runtime directory when QEMU is used.
-fn hostCanExecute(b: *std.Build, target: std.Build.ResolvedTarget) bool {
-    const host = &b.graph.host.result;
-    const candidate = &target.result;
-    const options: std.zig.system.GetExternalExecutorOptions = .{
-        .allow_darling = b.enable_darling,
-        .allow_qemu = b.enable_qemu,
-        .allow_wasmtime = b.enable_wasmtime,
-        .allow_wine = b.enable_wine,
-        // The consumer links libc through the imported library module.
-        .qemu_fixes_dl = candidate.isGnuLibC() and b.libc_runtimes_dir != null,
-        .link_libc = true,
-    };
-    return switch (std.zig.system.getExternalExecutor(b.graph.io, host, candidate, options)) {
-        .native, .rosetta => true,
-        // QEMU cannot run GNU libc targets without a runtime directory.
-        .wine, .wasmtime, .darling => true,
-        .qemu => !(candidate.isGnuLibC() and b.libc_runtimes_dir == null),
-        .bad_dl, .bad_os_or_cpu => false,
-    };
 }
 
 /// Checks unsupported targets through LuaJIT's own preprocessor error.
@@ -357,10 +320,10 @@ fn addArchitectureRefusalCheck(
     run.addArg("-o");
     // Declare the preprocessor output without depending on it; a dependency
     // creates a graph cycle.
-    _ = run.addOutputFileArg(b.fmt("lj_arch-{s}.i", .{triple}));
-    run.addFileArg(b.path("src/lj_arch.h"));
+    _ = run.addOutputFileArg2(b.fmt("lj_arch-{s}.i", .{triple}), .{});
+    run.addFileArg2(b.path("src/lj_arch.h"), .{});
     // lj_arch.h includes lua.h, which reaches luaconf.h from src/.
-    run.addPrefixedDirectoryArg("-I", b.path("src"));
+    run.addDirectoryArg2(b.path("src"), .{ .prefix = "-I" });
     // The expected upstream #error makes the target preprocessor exit 1.
     run.expectExitCode(1);
     run.expectStdErrMatch(message);
@@ -465,7 +428,13 @@ fn addPkgConfig(
     target: std.Target,
     release_version: []const u8,
 ) std.Build.LazyPath {
-    const template = b.build_root.handle.readFileAlloc(
+    b.dependOnFileContents(b.path(sources.pkg_config_template));
+    var root_dir = b.root.openDir(b.graph.io, ".", .{}) catch |err| std.debug.panic(
+        "luajit: cannot open the build root: {s}",
+        .{@errorName(err)},
+    );
+    defer root_dir.close(b.graph.io);
+    const template = root_dir.readFileAlloc(
         b.graph.io,
         sources.pkg_config_template,
         b.allocator,
@@ -505,26 +474,29 @@ fn addPkgConfig(
 
 /// Compiles two C translation units against the installed headers and library.
 /// Catches install-tree mismatches that in-tree module builds cannot see.
-fn addHeaderCheck(b: *std.Build, linkage: std.builtin.LinkMode, selection: abi.Selection) void {
+fn addHeaderCheck(b: *std.Build, linkage: std.lang.LinkMode, selection: abi.Selection) void {
     const check_step = b.step(
         "header-check",
         "Compile and link two C translation units against the installed headers " ++
             "and library, then run the result",
     );
 
-    // Use the installed pkg-config paths to check an external C consumer.
-    const prefix = b.getInstallPath(.prefix, "");
-    const include_dir = b.fmt("{s}/include/luajit-{s}", .{ prefix, graph.mm_version });
-    const lib_dir = b.fmt("{s}/lib", .{prefix});
+    const include_dir: std.Build.LazyPath = .{
+        .relative = .{
+            .base = .install_prefix,
+            .sub_path = b.fmt("include/luajit-{s}", .{graph.mm_version}),
+        },
+    };
+    const lib_dir: std.Build.LazyPath = .{ .relative = .{ .base = .install_lib } };
 
     // Model the compiler invocation as a build step so install ordering is explicit.
     const mod = b.createModule(.{
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .link_libc = true,
     });
-    mod.addIncludePath(.{ .cwd_relative = include_dir });
-    mod.addLibraryPath(.{ .cwd_relative = lib_dir });
+    mod.addIncludePath(include_dir);
+    mod.addLibraryPath(lib_dir);
     mod.linkSystemLibrary(graph.artifact_name, .{ .preferred_link_mode = linkage });
     mod.linkSystemLibrary("m", .{});
     switch (selection.os) {
@@ -532,7 +504,7 @@ fn addHeaderCheck(b: *std.Build, linkage: std.builtin.LinkMode, selection: abi.S
         else => {},
     }
     // Give the dynamic-link check executable a path to the installed library.
-    if (linkage == .dynamic) mod.addRPath(.{ .cwd_relative = lib_dir });
+    if (linkage == .dynamic) mod.addRPath(lib_dir);
 
     mod.addCSourceFile(.{ .file = b.path("build_support/header_check_a.c") });
     mod.addCSourceFile(.{ .file = b.path("build_support/header_check_b.c") });

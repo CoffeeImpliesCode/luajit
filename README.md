@@ -1,6 +1,6 @@
 # luajit
 
-A Zig 0.16.0 package for LuaJIT 2.1.1788856981, pinned to
+A Zig 0.17.0 package for LuaJIT 2.1.1788856981, pinned to
 `c6ffc141a8762b41703f9287d63d93622a13dd8f`.
 It builds upstream C sources and exports a typed Zig facade plus the translated C API.
 
@@ -73,7 +73,7 @@ translated API (`luajit.c`).
 | Option | Values | Default and effect |
 |---|---|---|
 | `-Dtarget` / `-Dcpu` | Zig target query | `-Dtarget` defaults to the host; Zig resolves the CPU unless selected. |
-| `-Doptimize` | `Debug`, `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall` | Zig default; applies to native and Zig code. |
+| `-Doptimize` | `debug`, `safe`, `fast`, `small` | Zig default; applies to native and Zig code. |
 | `-Dlinkage` | `static`, `dynamic` | `static`; selects the installed native artifact. |
 | `-Druntime` | `true`, `false` | `false`; resolves native calls through the platform loader instead of linking the archive into the facade. Orthogonal to `linkage`; the library remains built and installed as provider. |
-| `-Dlua-root` | absolute path | Optional install root compiled into the library and CLI. Relative paths are refused. When omitted, an absolute prefix outside the build cache is used if available; otherwise upstream's distribution layout applies. |
+| `-Dlua-root` | absolute path | Optional install root compiled into the library and CLI. Relative paths are refused. When omitted, upstream's distribution layout applies; the root is no longer inferred from `--prefix`. |

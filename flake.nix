@@ -5,7 +5,7 @@
 
   inputs = {
     # Keep the nixpkgs revision aligned with devenv.yaml.
-    nixpkgs.url = "github:NixOS/nixpkgs/c7def046b9a883d46974757852106483d741586f";
+    nixpkgs.url = "github:NixOS/nixpkgs/02c087f3fe673c9e317f206a627cb6b910336dbe";
   };
 
   outputs =
@@ -17,13 +17,13 @@
     in
     {
       packages = forAllSystems (pkgs: rec {
-        # Use the pinned Zig 0.16.0 package instead of nixpkgs' moving alias.
+        # Use the pinned Zig 0.17.0 package instead of nixpkgs' moving alias.
         static = pkgs.callPackage ./package.nix {
-          zig = pkgs.zig_0_16;
+          zig = pkgs.zig_0_17;
           linkage = "static";
         };
         shared = pkgs.callPackage ./package.nix {
-          zig = pkgs.zig_0_16;
+          zig = pkgs.zig_0_17;
           linkage = "dynamic";
         };
         default = static;
@@ -31,11 +31,11 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          # Keep the shell toolchain at Zig 0.16.0.
+          # Keep the shell toolchain at Zig 0.17.0.
           packages = [
             (
-              assert pkgs.zig_0_16.version == "0.16.0";
-              pkgs.zig_0_16
+              assert pkgs.zig_0_17.version == "0.17.0";
+              pkgs.zig_0_17
             )
             pkgs.pkg-config
             pkgs.git
