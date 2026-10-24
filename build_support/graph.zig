@@ -965,10 +965,13 @@ fn addCli(
     // the build cache with no `lib/` beside it. One description of the program
     // and one `Loader` argument decide which is which. See `linkForLoader`.
     linkForLoader(mod, library, o.target, loader);
-    return b.addExecutable(.{
+    const cli = b.addExecutable(.{
         .name = if (loader == .build_cache) b.fmt("{s}-cache-run", .{o.name_prefix}) else o.name_prefix,
         .root_module = mod,
     });
+    // `src/Makefile:348`: expose executable symbols to ffi.C on ELF.
+    cli.rdynamic = o.target.result.ofmt == .elf;
+    return cli;
 }
 
 /// Where a program built against this SDK's shared library must find it.

@@ -8,7 +8,7 @@
 -- quietly produced an interpreter-only library fails on `jit.on`, and a build
 -- that had quietly dropped the FFI fails on the `ffi.cdef` call below.
 --
--- Run as: luajit native_selfcheck.lua
+-- Run as: luajit native_selfcheck.lua [--static-musl]
 --
 -- Every expectation is Lua 5.1 semantics or LuaJIT's own documented behaviour,
 -- not a number this build produced:
@@ -110,10 +110,8 @@ check("string.dump produced a chunk", #chunk > 0, tostring(#chunk) .. " bytes")
 local reloaded = assert(loadstring(chunk))
 check("dumped chunk reloads and runs", reloaded(14) == 42, tostring(reloaded(14)))
 
--- 5. The FFI. `ffi.cdef` declares a C type and `ffi.C.*` calls through it, so
---    a build with LUAJIT_DISABLE_FFI fails on the first line. libm's `sqrt` is
---    declared rather than a Lua-callable name so the call has to go through the
---    FFI's own C-call machinery.
+-- 5. The FFI calls a typed function pointer on every target. Static musl has
+--    no dynamic symbol lookup; the build supplies --static-musl for that CLI.
 --
 --    `ffi` is not a global, and upstream never made it one: `luaL_openlibs`
 --    puts exactly one entry into the registry's `_PRELOAD`,
@@ -125,8 +123,15 @@ local ok_ffi, ffi = pcall(require, "ffi")
 check("ffi library loads", ok_ffi and type(ffi) == "table",
       ok_ffi and type(ffi) or "require failed")
 if ok_ffi then
+  local callback = ffi.cast("double (*)(double)", function(value) return math.sqrt(value) end)
+  check("ffi calls a function pointer", callback(16.0) == 4.0, tostring(callback(16.0)))
+  callback:free()
   ffi.cdef[[ double sqrt(double); ]]
-  check("ffi calls libm sqrt", ffi.C.sqrt(16.0) == 4.0, tostring(ffi.C.sqrt(16.0)))
+  if arg and arg[1] == "--static-musl" then
+    io.write("skip ffi.C.sqrt: static musl has no dynamic symbol lookup\n")
+  else
+    check("ffi calls libm sqrt", ffi.C.sqrt(16.0) == 4.0, tostring(ffi.C.sqrt(16.0)))
+  end
 end
 
 -- 6. Lua 5.1 numeric formatting and the string library, which are the parts a

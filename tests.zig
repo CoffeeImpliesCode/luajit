@@ -5,6 +5,8 @@ const std = @import("std");
 const luajit = @import("luajit");
 const testing = std.testing;
 
+extern fn luajit_test_abs(value: c_int) c_int;
+
 /// Shared-object path for runtime-loading tests.
 const provider_variable = "LUAJIT_TEST_PROVIDER";
 
@@ -944,8 +946,10 @@ test "the FFI reports this target's widths and calls into libc" {
     // `openLibs` preloads FFI; `openFfi` installs the global.
     state.openFfi();
 
-    // LuaJIT requires an FFI declaration before a C symbol can be indexed (`src/lj_clib.c:348-350`).
-    try state.run("ffi.cdef[[ int abs(int); ]]", "=ffi");
+    // Static musl has no dlsym implementation; pass the C address through the Lua API.
+    state.pushLightUserData(@ptrCast(@constCast(&luajit_test_abs)));
+    state.setGlobal("luajit_test_abs");
+    try state.run("luajit_test_abs = ffi.cast('int (*)(int)', luajit_test_abs)", "=ffi");
     state.setTop(0);
 
     // Convert cdata to Lua numbers before reading them through the C API (`src/lj_api.c:363-377`).
@@ -954,7 +958,7 @@ test "the FFI reports this target's widths and calls into libc" {
         \\     + tonumber(ffi.sizeof("void*")) * 65536,
         \\       tonumber(ffi.sizeof("double")) * 1024,
         \\       ffi.abi("64bit") == (tonumber(ffi.sizeof("void*")) == 8),
-        \\       tonumber(ffi.C.abs(-42))
+        \\       tonumber(luajit_test_abs(-42))
     , "=ffi", null);
     const expected = @as(luajit.Number, @floatFromInt(4 * 256)) +
         @as(luajit.Number, @floatFromInt(@sizeOf(usize) * 65536));
@@ -974,19 +978,25 @@ test "an FFI call with the wrong argument type is an error, not a wrong answer" 
     state.openLibs();
     state.openFfi();
 
-    // Declare the C symbol before indexing it through the FFI (`src/lj_clib.c:348-350`).
-    try state.run("ffi.cdef[[ int abs(int); ]]", "=ffi");
+    state.pushLightUserData(@ptrCast(@constCast(&luajit_test_abs)));
+    state.setGlobal("luajit_test_abs");
+    try state.run("luajit_test_abs = ffi.cast('int (*)(int)', luajit_test_abs)", "=ffi");
     state.setTop(0);
 
-    // A string cannot match `abs`'s declared `int`; the protected call returns an error.
+    // Call the C function before testing argument conversion.
+    try state.run("return tonumber(luajit_test_abs(-42))", "=ffi");
+    try testing.expectEqual(@as(luajit.Number, 42), state.toNumber(1));
+    state.setTop(0);
+
+    // A string cannot match the declared `int`; the protected call returns an error.
     try testing.expectError(
         error.RuntimeError,
-        runReporting(&state, "return ffi.C.abs(\"not a number\")", "=ffi", error.RuntimeError),
+        runReporting(&state, "return luajit_test_abs(\"not a number\")", "=ffi", error.RuntimeError),
     );
 
     // The state remains usable after a protected error.
     state.setTop(0);
-    try state.run("return tonumber(ffi.C.abs(-42))", "=ffi");
+    try state.run("return tonumber(luajit_test_abs(-42))", "=ffi");
     try testing.expectEqual(@as(luajit.Number, 42), state.toNumber(1));
 }
 

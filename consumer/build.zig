@@ -99,6 +99,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_mod.addImport("luajit", dep.module("luajit"));
+    exe_mod.addCSourceFile(.{
+        .file = dep.path("build_support/ffi_test.c"),
+        .flags = &.{"-fno-builtin-abs"},
+    });
 
     const exe = b.addExecutable(.{
         .name = "luajit-consumer",

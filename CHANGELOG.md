@@ -1,5 +1,7 @@
 # CHANGELOG
 
+- Pass C function pointers to FFI tests and consumer checks on static musl; skip only the unsupported CLI symbol lookup.
+- Export ELF CLI symbols for FFI symbol lookup.
 - Port to Zig 0.17.0.
 - Nested consumer builds preserve cache and toolchain environment paths and forward `-Dlua-root` under its declared name.
 - `-Dlua-root` no longer infers an embedded root from `--prefix`; set it explicitly when needed.

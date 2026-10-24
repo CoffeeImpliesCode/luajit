@@ -104,6 +104,9 @@ pub fn build(b: *std.Build) void {
     const run_selfcheck = b.addRunArtifact(native.run_cli.?);
     run_selfcheck.setName("luajit native self-check");
     run_selfcheck.addFileArg2(b.path("build_support/native_selfcheck.lua"), .{});
+    if (target.result.isMuslLibC() and !target.query.isNativeAbi() and linkage == .static) {
+        run_selfcheck.addArg("--static-musl");
+    }
     // Force execution; a cached run result would not prove the CLI ran.
     run_selfcheck.has_side_effects = true;
 
@@ -119,10 +122,7 @@ pub fn build(b: *std.Build) void {
     // The default install step compiles the CLI; execution belongs to native-test.
     b.getInstallStep().dependOn(&native.cli.?.step);
 
-    const facade_tests = b.addTest(.{
-        .name = "luajit-tests",
-        .root_module = facadeProgram(b, target, optimize, native.module.?, "tests.zig"),
-    });
+    const facade_tests = addFacadeTests(b, target, optimize, native.module.?, "luajit-tests");
     const run_tests = b.addRunArtifact(facade_tests);
     run_tests.has_side_effects = true;
     b.step("test", "Run the LuaJIT facade tests for the selected target")
@@ -173,6 +173,24 @@ fn facadeProgram(
     return mod;
 }
 
+fn addFacadeTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    facade: *std.Build.Module,
+    name: []const u8,
+) *std.Build.Step.Compile {
+    const tests = b.addTest(.{
+        .name = name,
+        .root_module = facadeProgram(b, target, optimize, facade, "tests.zig"),
+    });
+    tests.root_module.addCSourceFile(.{
+        .file = b.path("build_support/ffi_test.c"),
+        .flags = &.{"-fno-builtin-abs"},
+    });
+    return tests;
+}
+
 /// Compiles the graph and roots for one target; cross-compiled binaries do not
 /// execute here.
 fn addTargetCheck(
@@ -212,10 +230,13 @@ fn addTargetCheck(
 
     step.dependOn(&native.library.step);
     step.dependOn(&native.cli.?.step);
-    step.dependOn(&b.addTest(.{
-        .name = b.fmt("luajit-tests-{s}", .{triple}),
-        .root_module = facadeProgram(b, resolved, optimize, native.module.?, "tests.zig"),
-    }).step);
+    step.dependOn(&addFacadeTests(
+        b,
+        resolved,
+        optimize,
+        native.module.?,
+        b.fmt("luajit-tests-{s}", .{triple}),
+    ).step);
     step.dependOn(&b.addExecutable(.{
         .name = b.fmt("luajit-smoke-{s}", .{triple}),
         .root_module = facadeProgram(b, resolved, optimize, native.module.?, "smoke.zig"),

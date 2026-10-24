@@ -23,7 +23,10 @@ No imported C, assembly, header, data, or licence file is modified. Files under 
 - The nested consumer build cannot forward the parent's `--libc-runtimes`, so GNU-libc QEMU targets are install-only.
 - Consumer run/install selection checks native dynamic-loader availability and poisons the nested configuration cache because the filesystem check has no tracked input.
 - The outer consumer run depends on package installation so the parent prefix exists before Zig 0.17 resolves it as an input directory.
-- ELF Unix builds link `gcc_s` for LuaJIT's external unwinder, and static `luajit.pc` metadata adds the same dependency. Darwin omits the upstream `-Wl,-E` flag.
+- ELF Unix builds link `gcc_s` for LuaJIT's external unwinder, and static `luajit.pc` metadata adds the same dependency.
+- The CLI exports executable symbols on ELF with Zig's `rdynamic`, matching upstream's `-Wl,-E`. Darwin omits this flag.
+- Facade tests and the consumer link `build_support/ffi_test.c`, which calls libc `abs` with builtin substitution disabled. They pass its address as light userdata and use `ffi.cast` to obtain a typed function pointer, without dynamic-loader lookup or executable export flags.
+- `native-test` passes `--static-musl` to `native_selfcheck.lua` for non-native musl ABI targets linked to the static archive. Other CLI builds retain the `ffi.C.sqrt` assertion; all CLI builds check an FFI callback call.
 - The graph passes `-fno-sanitize=shift-base` to native C because upstream's ULEB128 decoder shifts a signed value into the sign bit; other sanitizer checks remain enabled.
 - The runtime resolver accounts for fortified libc declarations in safe optimization mode so libc symbols are not mistaken for provider symbols.
 - `zig build install` installs the CLI, selected library, public headers, JIT modules, man page, pkg-config file, copyright, and fork records. It omits upstream's versioned CLI symlink and empty module directories. Windows library filenames differ from upstream's, but the exported symbols and link name do not.

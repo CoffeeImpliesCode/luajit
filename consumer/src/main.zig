@@ -5,6 +5,8 @@
 const std = @import("std");
 const luajit = @import("luajit");
 
+extern fn luajit_test_abs(value: c_int) c_int;
+
 const thousand_sum: luajit.Integer = 500500;
 
 const zero_padded = "00042";
@@ -57,7 +59,7 @@ pub fn main(init: std.process.Init) !void {
         try w.print("jit.version_num {d} is outside the 2.1 family\n", .{version_num});
         return error.ConsumerCheckFailed;
     }
-    try w.print("{s: <24} in the 2.1 family\n", .{ "jit.version_num" });
+    try w.print("{s: <24} in the 2.1 family\n", .{"jit.version_num"});
 
     state.setTop(0);
     try state.run(
@@ -140,20 +142,22 @@ pub fn main(init: std.process.Init) !void {
     if (!luajit.jit.enable(&state)) return error.ConsumerCheckFailed;
     try state.run("local on = jit.status() return on", "=consumer");
     if (!state.toBoolean(1)) return error.ConsumerCheckFailed;
-    try w.print("{s: <24} off then on, confirmed by jit.status\n", .{ "jit engine" });
+    try w.print("{s: <24} off then on, confirmed by jit.status\n", .{"jit engine"});
 
     // Convert FFI cdata with Lua's `tonumber`; `lua_tointegerx` accepts only numbers or numeric strings (`src/lj_api.c:422-445`).
-    // Declare `abs` before `ffi.C` lookup; LuaJIT rejects undeclared symbols (`src/lj_clib.c:348-350`).
+    // Pass the C address through the Lua API; static musl cannot resolve ffi.C symbols.
     state.setTop(0);
-    try state.run("ffi.cdef[[ int abs(int); ]]", "=consumer");
+    state.pushLightUserData(@ptrCast(@constCast(&luajit_test_abs)));
+    state.setGlobal("luajit_test_abs");
+    try state.run("luajit_test_abs = ffi.cast('int (*)(int)', luajit_test_abs)", "=consumer");
     state.setTop(0);
     try state.run(
-        \\return tonumber(ffi.sizeof("void*")), tonumber(ffi.C.abs(-7))
+        \\return tonumber(ffi.sizeof("void*")), tonumber(luajit_test_abs(-7))
     , "=consumer");
     if (state.toInteger(1) != @as(luajit.Integer, @intCast(@sizeOf(usize)))) {
         return error.ConsumerCheckFailed;
     }
-    try expectInteger(w, "ffi", "ffi.C.abs(-7)", state.toInteger(2), 7);
+    try expectInteger(w, "ffi", "luajit_test_abs(-7)", state.toInteger(2), 7);
 
     state.deinit();
     if (budget.blocks.count() != 0 or budget.bytes_out != budget.bytes_in) {

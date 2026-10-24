@@ -43,6 +43,14 @@ The build selects PE/COFF output for Windows, Mach-O assembly for Darwin-family
 targets and ELF assembly otherwise. Architecture and toolchain constraints
 still apply.
 
+Static musl executables cannot resolve `ffi.C` symbols or use `ffi.load`:
+musl's static `dlsym` and `dlopen` are stubs. FFI calls through supplied function
+pointers still work. `-Dtarget=aarch64-linux` selects musl; with the default
+static library, Zig links the cross-target executable statically.
+`native-test` skips only its `ffi.C.sqrt` lookup for static musl and still
+checks FFI function-pointer calls. The facade tests and consumer supply C
+function addresses through the Lua API and skip no FFI assertions.
+
 ## Consumption
 
 The package is local and unpublished. Point a Zig package at a checkout in
@@ -57,6 +65,11 @@ The package is local and unpublished. Point a Zig package at a checkout in
 In `build.zig`, import `dep.module("luajit")` under the name `luajit`;
 source files use `@import("luajit")`. The module's `c` declaration is the raw
 translated API (`luajit.c`).
+
+Dynamically linked ELF consumers that expose executable C symbols through
+`ffi.C` must set `exe.rdynamic = true`. Linking libc alone does not retain
+unreferenced symbols from a static archive. For static musl, pass function
+addresses with `State.pushLightUserData` and cast them with `ffi.cast`.
 
 | Name | Value |
 |---|---|
