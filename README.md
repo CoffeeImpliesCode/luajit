@@ -53,13 +53,10 @@ function addresses through the Lua API and skip no FFI assertions.
 
 ## Consumption
 
-The package is local and unpublished. Point a Zig package at a checkout in
-`build.zig.zon`:
+Fetch the published package from GitHub:
 
-```zig
-.dependencies = .{
-    .luajit = .{ .path = "../luajit" },
-},
+```sh
+zig fetch --save git+https://github.com/CoffeeImpliesCode/luajit#v2.1.1788856981
 ```
 
 In `build.zig`, import `dep.module("luajit")` under the name `luajit`;
